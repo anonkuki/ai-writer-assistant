@@ -29,6 +29,10 @@ import { DocumentModule } from './document/document.module';
 import { AiModule } from './ai/ai.module';
 // 引入认证模块，处理 JWT 鉴权
 import { AuthModule } from './auth/auth.module';
+// 引入用户模块，处理用户注册登录
+import { UsersModule } from './users/users.module';
+// 引入 Redis 模块，处理缓存
+import { RedisModule } from './common/redis/redis.module';
 // 引入文档网关，处理实时通信（多人协作）
 import { DocumentGateway } from './gateway/document.gateway';
 
@@ -40,7 +44,14 @@ import { DocumentGateway } from './gateway/document.gateway';
 @Module({
   // imports: 声明当前模块依赖的其他模块
   // 就像在公司架构中，一个部门可能需要依赖其他部门的服务
-  imports: [ConfigModule.forRoot({ isGlobal: true }), DocumentModule, AiModule, AuthModule],
+  imports: [
+    ConfigModule.forRoot({ isGlobal: true }),
+    RedisModule,
+    DocumentModule,
+    AiModule,
+    AuthModule,
+    UsersModule,
+  ],
 
   // providers: 声明当前模块提供的服务（可以被注入到其他类中）
   // DocumentGateway 是 WebSocket 网关，用于处理实时通信

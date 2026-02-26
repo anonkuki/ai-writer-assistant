@@ -4,15 +4,240 @@ generator client {
 
 datasource db {
   provider = "sqlite"
-  url      = "file:./dev.db"
+  url      = env("DATABASE_URL")
 }
 
-model Document {
+// ==================== 用户与认证 ====================
+
+model User {
   id        String   @id @default(uuid())
-  title     String   @default("Untitled")
-  content   String   @default("{}")
-  ownerId   String   @default("default-user")
-  version   Int      @default(1)
+  email     String   @unique
+  password  String
+  name      String?
+  avatar    String?
+  role      String   @default("USER")  // USER | ADMIN
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  // 关系
+  teamMembers    TeamMember[]
+  ownedTeams    Team[]
+  documents     Document[]
+  favorites     Favorite[]
+  comments      Comment[]
+  notifications Notification[]
+  auditLogs     AuditLog[]
+}
+
+// ==================== 团队 ====================
+
+model Team {
+  id        String   @id @default(uuid())
+  name      String
+  ownerId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 关系
+  owner      User          @relation(fields: [ownerId], references: [id])
+  members    TeamMember[]
+  documents  Document[]
+  folders    Folder[]
+  tags       Tag[]
+  invites    TeamInvite[]
+}
+
+model TeamMember {
+  id        String   @id @default(uuid())
+  userId    String
+  teamId    String
+  role      String   @default("MEMBER")  // OWNER | ADMIN | MEMBER
+  joinedAt  DateTime @default(now())
+
+  // 关系
+  user User @relation(fields: [userId], references: [id])
+  team Team @relation(fields: [teamId], references: [id])
+
+  @@unique([userId, teamId])
+}
+
+model TeamInvite {
+  id        String   @id @default(uuid())
+  teamId    String
+  email     String
+  role      String   @default("MEMBER")  // OWNER | ADMIN | MEMBER
+  token     String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  // 关系
+  team Team @relation(fields: [teamId], references: [id])
+}
+
+// ==================== 文档 ====================
+
+model Document {
+  id          String    @id @default(uuid())
+  title       String    @default("Untitled")
+  content     String    @default("{}")
+  ownerId     String
+  teamId      String?
+  folderId    String?
+  isTemplate  Boolean   @default(false)
+  isDeleted   Boolean   @default(false)
+  deletedAt   DateTime?
+  version     Int       @default(1)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // 关系
+  owner     User              @relation(fields: [ownerId], references: [id])
+  team      Team?             @relation(fields: [teamId], references: [id])
+  folder    Folder?           @relation(fields: [folderId], references: [id])
+  versions  DocumentVersion[]
+  tags      DocumentTag[]
+  comments  Comment[]
+  shares    Share[]
+  favorites Favorite[]
+}
+
+// ==================== 版本历史 ====================
+
+model DocumentVersion {
+  id          String   @id @default(uuid())
+  documentId  String
+  content     String
+  version     Int
+  changeDesc  String?
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  // 关系
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+}
+
+// ==================== 文件夹 ====================
+
+model Folder {
+  id        String   @id @default(uuid())
+  name      String
+  parentId  String?
+  teamId    String
+  ownerId   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // 关系
+  team      Team       @relation(fields: [teamId], references: [id])
+  parent    Folder?    @relation("FolderTree", fields: [parentId], references: [id])
+  children  Folder[]   @relation("FolderTree")
+  documents Document[]
+}
+
+// ==================== 标签 ====================
+
+model Tag {
+  id      String @id @default(uuid())
+  name    String
+  color   String @default("#3B82F6")
+  teamId  String
+  createdAt DateTime @default(now())
+
+  // 关系
+  team      Team          @relation(fields: [teamId], references: [id])
+  documents DocumentTag[]
+}
+
+model DocumentTag {
+  documentId String
+  tagId      String
+  createdAt  DateTime @default(now())
+
+  // 关系
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  tag      Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([documentId, tagId])
+}
+
+// ==================== 分享 ====================
+
+model Share {
+  id          String   @id @default(uuid())
+  documentId  String
+  token       String   @unique
+  permission  String   @default("READ")  // READ | WRITE
+  expiresAt   DateTime?
+  createdBy   String
+  createdAt   DateTime @default(now())
+
+  // 关系
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+}
+
+// ==================== 收藏 ====================
+
+model Favorite {
+  id         String   @id @default(uuid())
+  userId     String
+  documentId String
+  createdAt  DateTime @default(now())
+
+  // 关系
+  user    User    @relation(fields: [userId], references: [id])
+  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, documentId])
+}
+
+// ==================== 评论 ====================
+
+model Comment {
+  id         String    @id @default(uuid())
+  documentId String
+  userId     String
+  parentId   String?
+  content    String
+  mentions   String    @default("[]") // JSON string array
+  taskStatus String?   // PENDING | IN_PROGRESS | DONE
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  // 关系
+  document Document  @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  user    User      @relation(fields: [userId], references: [id])
+  parent  Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+  replies Comment[] @relation("CommentReplies")
+}
+
+// ==================== 通知 ====================
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  type      String   // COMMENT | MENTION | SHARE | INVITE | TASK
+  title     String
+  content   String
+  link      String?
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  // 关系
+  user User @relation(fields: [userId], references: [id])
+}
+
+// ==================== 审计日志 ====================
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String
+  action     String
+  resource   String
+  resourceId String
+  details    String?  // JSON string
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  // 关系
+  user User @relation(fields: [userId], references: [id])
 }
