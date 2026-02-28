@@ -267,6 +267,6 @@ const collaboratorCount = documentStore.collaborators.length;
     </main>
 
     <!-- AI 面板（Teleport 到 body） -->
-    <AiPanel />
+    <AiPanel :document-id="documentId" />
   </div>
 </template>

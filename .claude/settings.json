@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm install)"
+      "Bash(npm install)",
+      "Bash(git commit:*)",
+      "Bash(npx vue-tsc --noEmit)",
+      "Bash(git add .)"
     ]
   }
 }
