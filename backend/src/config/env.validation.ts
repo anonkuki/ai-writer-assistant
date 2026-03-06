@@ -40,11 +40,13 @@ export function validateEnv(env: RawEnv) {
     SILICONFLOW_API_URL:
       env.SILICONFLOW_API_URL || 'https://api.siliconflow.cn/v1/chat/completions',
     SILICONFLOW_MODEL: env.SILICONFLOW_MODEL || 'deepseek-ai/DeepSeek-V3.2',
+    SILICONFLOW_FAST_MODEL: env.SILICONFLOW_FAST_MODEL || '',
     SILICONFLOW_TIMEOUT_MS: toPositiveInt(
       env.SILICONFLOW_TIMEOUT_MS,
       30000,
       'SILICONFLOW_TIMEOUT_MS',
     ),
+    CONTEXT_CACHE_TTL_MS: toInt(env.CONTEXT_CACHE_TTL_MS, 30000),
     JWT_SECRET: env.JWT_SECRET,
     DATABASE_URL: env.DATABASE_URL,
     REDIS_URL: env.REDIS_URL,

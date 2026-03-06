@@ -80,6 +80,12 @@ export class AgentController {
 
   // ==================== 核心 Agent API ====================
 
+  /** 获取可用模型列表 */
+  @Get('models')
+  getAvailableModels() {
+    return this.orchestrator.getAvailableModels();
+  }
+
   /** AI 代理主入口 */
   @Post('agent')
   @HttpCode(HttpStatus.OK)
@@ -154,6 +160,7 @@ export class AgentController {
         },
         dto.chapterId,
         dto.currentContent,
+        dto.modelId,
       );
       res.write(`data: ${JSON.stringify({ type: 'done', data: result })}\n\n`);
     } catch (err: any) {
@@ -183,6 +190,7 @@ export class AgentController {
         dto.chapterId,
         dto.currentContent,
         dto.contextScope,
+        dto.modelId,
       );
       res.write(`data: ${JSON.stringify({ type: 'done', data: result })}\n\n`);
     } catch (err: any) {

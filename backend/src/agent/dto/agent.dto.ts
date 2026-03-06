@@ -200,6 +200,11 @@ export class ChatMessageDto {
   @IsOptional()
   @MaxLength(20000)
   currentContent?: string;
+
+  /** 用户选择的模型 ID，留空则使用默认模型 */
+  @IsString()
+  @IsOptional()
+  modelId?: string;
 }
 
 // ==================== 深度思考对话 ====================
@@ -230,6 +235,11 @@ export class DeepThinkChatDto {
   @IsString()
   @IsOptional()
   contextScope?: 'chapter' | 'fullBook' | 'custom';
+
+  /** 用户选择的模型 ID，留空则使用默认模型 */
+  @IsString()
+  @IsOptional()
+  modelId?: string;
 }
 
 // ==================== 工具分析 ====================

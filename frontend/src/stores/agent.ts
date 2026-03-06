@@ -357,6 +357,70 @@ export const useAgentStore = defineStore('agent', () => {
   /** 剩余使用次数 */
   const remainingQuota = ref(666);
 
+  // ===== 模型选择 =====
+  interface ModelOption {
+    id: string;
+    label: string;
+    description: string;
+    speed: 'fast' | 'normal' | 'slow';
+  }
+  // 硬编码 fallback 模型列表（API 失败时使用）
+  const fallbackModels: ModelOption[] = [
+    { id: 'Pro/deepseek-ai/DeepSeek-V3.2', label: 'DeepSeek V3.2', description: '旗舰模型，质量最高', speed: 'normal' },
+    { id: 'Pro/zhipuai/GLM-5', label: 'GLM-5', description: '智谱高质量模型', speed: 'normal' },
+    { id: 'Pro/MiniMaxAI/MiniMax-M2.5', label: 'MiniMax M2.5', description: '快速响应，均衡质量', speed: 'fast' },
+  ];
+
+  const availableModels = ref<ModelOption[]>(fallbackModels);
+  const selectedModelId = ref<string>(localStorage.getItem('ai_selected_model') || '');
+  const defaultModelId = ref<string>('Pro/deepseek-ai/DeepSeek-V3.2');
+
+  /** 获取可用模型列表 */
+  async function fetchAvailableModels() {
+    try {
+      const authToken = localStorage.getItem('token');
+      const res = await axios.get(`${API_URL}/ai/models`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      const data = res.data;
+      const models = Array.isArray(data.models) && data.models.length > 0 ? data.models : fallbackModels;
+      availableModels.value = models;
+      defaultModelId.value = data.defaultModel || 'Pro/deepseek-ai/DeepSeek-V3.2';
+      // 如果用户之前选的模型已不在列表中，则重置
+      if (selectedModelId.value && !availableModels.value.find(m => m.id === selectedModelId.value)) {
+        selectedModelId.value = '';
+      }
+    } catch (e) {
+      console.warn('[AI] fetchAvailableModels failed, using fallback models:', e);
+      // 保持 fallback 模型列表不变
+    }
+  }
+
+  /** 切换模型 */
+  function setModel(modelId: string) {
+    selectedModelId.value = modelId;
+    if (modelId) {
+      localStorage.setItem('ai_selected_model', modelId);
+    } else {
+      localStorage.removeItem('ai_selected_model');
+    }
+  }
+
+  /** 当前有效模型ID（空字符串 = 默认） */
+  const effectiveModelId = computed(() => selectedModelId.value || defaultModelId.value);
+
+  /** 当前模型显示名称 */
+  const currentModelLabel = computed(() => {
+    const m = availableModels.value.find(m => m.id === effectiveModelId.value);
+    return m?.label || 'DeepSeek V3.2';
+  });
+
+  // 当前模型速度标签
+  const currentModelSpeed = computed(() => {
+    const m = availableModels.value.find(m => m.id === effectiveModelId.value);
+    return m?.speed || 'normal';
+  });
+
   // ===== 右侧工具面板分析结果 =====
   interface ToolAnalysisResult {
     tool: RightPanelTool;
@@ -527,6 +591,11 @@ export const useAgentStore = defineStore('agent', () => {
       const parser = createSSEParser((event) => {
         if (event.type === 'suggestion') {
           const d = event.data;
+          // 防御性过滤：避免把解析异常的标签文本写入建议并最终污染正文
+          const hasMarkers = [d?.original, d?.replacement, d?.reason]
+            .some((v: string) => typeof v === 'string' && v.includes('<<<'));
+          if (hasMarkers) return;
+          if (!d?.original || !d?.replacement) return;
           polishSuggestions.value = [
             ...polishSuggestions.value,
             {
@@ -534,7 +603,7 @@ export const useAgentStore = defineStore('agent', () => {
               index: d.index,
               original: d.original,
               replacement: d.replacement,
-              reason: d.reason,
+              reason: d.reason || '表达优化',
               status: 'pending',
             },
           ];
@@ -1349,6 +1418,7 @@ export const useAgentStore = defineStore('agent', () => {
           ...(chapterId && { chapterId }),
           ...(currentContent && { currentContent: currentContent.slice(-15000) }),
           ...(useDeepThink && { contextScope: contextScope.value }),
+          ...(selectedModelId.value && { modelId: selectedModelId.value }),
         }),
         signal,
       });
@@ -1844,5 +1914,14 @@ export const useAgentStore = defineStore('agent', () => {
     rejectPlan,
     clearChat,
     reset,
+    // Model selection
+    availableModels,
+    selectedModelId,
+    defaultModelId,
+    effectiveModelId,
+    currentModelLabel,
+    currentModelSpeed,
+    fetchAvailableModels,
+    setModel,
   };
 });

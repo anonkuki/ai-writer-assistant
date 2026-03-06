@@ -1,6 +1,8 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import * as http from 'http';
+import * as https from 'https';
 import { PrismaService } from '../prisma.service';
 import { PlannerService } from '../planner/planner.service';
 import { CharacterService } from '../character/character.service';
@@ -155,7 +157,26 @@ export class OrchestratorService {
   private readonly logger = new Logger(OrchestratorService.name);
   private readonly apiKey: string;
   private readonly apiUrl = 'https://api.siliconflow.cn/v1/chat/completions';
-  private readonly model = 'deepseek-ai/DeepSeek-V3.2';
+  private readonly model = 'Pro/deepseek-ai/DeepSeek-V3.2';
+  /** 轻量任务快速模型（一致性检查、思考阶段等），留空则复用主模型 */
+  private readonly fastModel: string;
+  /** loadContext 内存缓存 TTL（毫秒），0 表示禁用 */
+  private readonly contextCacheTtlMs: number;
+
+  /** HTTP keep-alive 连接池，避免每次请求重建 TCP 连接 */
+  private readonly httpAgent = new http.Agent({ keepAlive: true, maxSockets: 20 });
+  private readonly httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 20 });
+
+  /** loadContext 内存缓存: bookId -> { data, expireAt } */
+  private readonly contextCache = new Map<string, { data: any; expireAt: number }>();
+
+  /** 用户可选的模型列表（id → 显示信息） */
+  private readonly availableModels: Array<{
+    id: string;
+    label: string;
+    description: string;
+    speed: 'fast' | 'normal' | 'slow';
+  }>;
 
   constructor(
     private prisma: PrismaService,
@@ -166,6 +187,30 @@ export class OrchestratorService {
     private configService: ConfigService,
   ) {
     this.apiKey = this.configService.get<string>('SILICONFLOW_API_KEY') ?? '';
+    this.fastModel = this.configService.get<string>('SILICONFLOW_FAST_MODEL') || '';
+    this.contextCacheTtlMs = this.configService.get<number>('CONTEXT_CACHE_TTL_MS') ?? 30000;
+
+    // 构建可用模型列表
+    this.availableModels = [
+      { id: 'Pro/deepseek-ai/DeepSeek-V3.2', label: 'DeepSeek V3.2', description: '旗舰模型，质量最高', speed: 'normal' },
+      { id: 'Pro/zhipuai/GLM-5', label: 'GLM-5', description: '智谱高质量模型', speed: 'normal' },
+      { id: 'Pro/MiniMaxAI/MiniMax-M2.5', label: 'MiniMax M2.5', description: '快速响应，均衡质量', speed: 'fast' },
+    ];
+  }
+
+  /** 返回用户可选的模型列表 */
+  getAvailableModels() {
+    return {
+      models: this.availableModels,
+      defaultModel: this.model,
+    };
+  }
+
+  /** 解析用户指定的模型ID，若不在白名单则回退到默认模型 */
+  private resolveModel(modelId?: string): string {
+    if (!modelId) return this.model;
+    const found = this.availableModels.find((m) => m.id === modelId);
+    return found ? found.id : this.model;
   }
 
   /**
@@ -271,7 +316,7 @@ export class OrchestratorService {
       }
     }
 
-    // 对第一个候选做一致性检查
+    // 对第一个候选做一致性检查（使用快速模型）
     let diagnostics: any[] = [];
     let warnings: string[] = [];
     if (candidates.length > 0) {
@@ -279,6 +324,7 @@ export class OrchestratorService {
         AgentType.CONSISTENCY,
         this.buildConsistencyPrompt(request.bookId, candidates[0], context),
         0.3,
+        { useFastModel: true },
       );
 
       const parsed = this.parseConsistencyResult(consistencyResult.result);
@@ -524,7 +570,8 @@ export class OrchestratorService {
       const nextOrder =
         existingChapters.length > 0 ? Math.max(...existingChapters.map((c) => c.order)) + 1 : 1;
 
-      // 加载新创建的上下文
+      // 新资源已创建 → 刷新上下文缓存
+      this.invalidateContextCache(bookId);
       const context = await this.loadContext(bookId);
 
       for (let i = 0; i < plan.chapterOutlines.length; i++) {
@@ -609,6 +656,7 @@ export class OrchestratorService {
     onChunk: (chunk: string) => void,
     chapterId?: string,
     currentContent?: string,
+    modelId?: string,
   ): Promise<{ reply: string; suggestedActions?: any[] }> {
     const context = await this.loadContext(bookId, chapterId);
 
@@ -746,7 +794,7 @@ G) 多个操作可以组合为一个数组。
         AgentType.WRITER,
         message,
         0.8,
-        { maxTokens: 2000, timeoutMs: 120000, systemPrompt },
+        { maxTokens: 2000, timeoutMs: 120000, systemPrompt, modelOverride: modelId },
         onChunk,
       );
 
@@ -779,6 +827,7 @@ G) 多个操作可以组合为一个数组。
     chapterId?: string,
     currentContent?: string,
     contextScope?: 'chapter' | 'fullBook' | 'custom',
+    modelId?: string,
   ): Promise<{ thinking: string; reply: string; suggestedActions?: any[] }> {
     const context = await this.loadContext(bookId, chapterId);
 
@@ -837,7 +886,7 @@ G) 多个操作可以组合为一个数组。
         .map((f: any) => `「${f.title}」: ${(f.content || '').slice(0, 60)}`)
         .join('\n') || '无';
 
-    // === Phase 1: 深度思考（分析用户意图、梳理上下文） ===
+    // === Phase 1: 深度思考（分析用户意图、梳理上下文）— 使用快速模型 ===
     onEvent({ type: 'thinking_start', data: {} });
 
     const thinkingSystemPrompt = `你是一个专业的小说创作分析师。你的任务是分析用户的创作请求并输出详细的思考过程。
@@ -865,7 +914,7 @@ ${contentSnippet ? `--- 编辑器内容 ---\n${contentSnippet}\n---` : ''}
         AgentType.WRITER,
         `分析以下用户请求:\n「${message}」`,
         0.4,
-        { maxTokens: 600, timeoutMs: 30000, systemPrompt: thinkingSystemPrompt },
+        { maxTokens: 600, timeoutMs: 30000, systemPrompt: thinkingSystemPrompt, useFastModel: true },
         (chunk) => {
           onEvent({ type: 'thinking_token', data: { text: chunk } });
         },
@@ -925,7 +974,7 @@ F) analyze_text: {"type":"analyze_text","label":"分析描述","data":{"analysis
         AgentType.WRITER,
         message,
         0.8,
-        { maxTokens: 2000, timeoutMs: 120000, systemPrompt: replySystemPrompt },
+        { maxTokens: 2000, timeoutMs: 120000, systemPrompt: replySystemPrompt, modelOverride: modelId },
         (chunk) => {
           onEvent({ type: 'token', data: { text: chunk } });
         },
@@ -991,6 +1040,29 @@ ${content}`;
     let buffer = '';
     let suggestionIndex = 0;
 
+    const parseBlock = (block: string): { original: string; replacement: string; reason: string } | null => {
+      const findStart = block.indexOf('<<<FIND>>>');
+      const replaceStart = block.indexOf('<<<REPLACE>>>');
+      const reasonStart = block.indexOf('<<<REASON>>>');
+      if (findStart === -1 || replaceStart === -1 || reasonStart === -1) return null;
+      if (!(findStart < replaceStart && replaceStart < reasonStart)) return null;
+
+      const original = block.slice(findStart + 10, replaceStart).trim();
+      const replacement = block.slice(replaceStart + 13, reasonStart).trim();
+      const reasonRaw = block.slice(reasonStart + 12).trim();
+      const reason =
+        reasonRaw
+          .split('\n')
+          .map((line) => line.trim())
+          .find((line) => line.length > 0 && !line.includes('<<<')) || '表达优化';
+
+      if (!original || !replacement) return null;
+      // 防御性过滤：若模型把标签串进字段，直接丢弃，避免污染正文
+      if (original.includes('<<<') || replacement.includes('<<<') || reason.includes('<<<')) return null;
+
+      return { original, replacement, reason };
+    };
+
     try {
       await this.streamCallAgent(
         AgentType.WRITER,
@@ -1003,66 +1075,57 @@ ${content}`;
         },
         (chunk: string) => {
           buffer += chunk;
-          // 尝试从 buffer 中解析完整的建议块
+          // 仅在“当前块已经遇到下一个 FIND”时解析，避免半截 REASON 被误解析
           while (true) {
             const findStart = buffer.indexOf('<<<FIND>>>');
-            const replaceStart = buffer.indexOf('<<<REPLACE>>>');
-            const reasonStart = buffer.indexOf('<<<REASON>>>');
+            if (findStart === -1) {
+              // 清理无效前缀，避免 buffer 无限制增长
+              if (buffer.length > 4096) buffer = buffer.slice(-1024);
+              break;
+            }
 
-            if (findStart === -1 || replaceStart === -1 || reasonStart === -1) break;
-            // 确保顺序正确
-            if (!(findStart < replaceStart && replaceStart < reasonStart)) break;
+            const nextFind = buffer.indexOf('<<<FIND>>>', findStart + 10);
+            if (nextFind === -1) {
+              // 保留从当前 FIND 开始的未完成块，等待更多流数据
+              if (findStart > 0) buffer = buffer.slice(findStart);
+              break;
+            }
 
-            // 查找当前 REASON 块的结束——要么是下一个 <<<FIND>>>，要么是 buffer 末尾
-            const nextFind = buffer.indexOf('<<<FIND>>>', reasonStart + 12);
-            const reasonEnd = nextFind !== -1 ? nextFind : undefined;
-
-            // 如果 reasonEnd 是 undefined 且 buffer 还可能继续增长，等更多数据
-            // 但我们需要至少一个换行符来判断 REASON 已完成
-            const reasonContent = buffer.slice(reasonStart + 12, reasonEnd).trim();
-            if (!reasonEnd && !reasonContent.includes('\n') && reasonContent.length < 5) break;
-
-            const original = buffer.slice(findStart + 10, replaceStart).trim();
-            const replacement = buffer.slice(replaceStart + 13, reasonStart).trim();
-            const reason = reasonContent.split('\n')[0].trim(); // 取第一行作为原因
-
-            if (original && replacement) {
+            const block = buffer.slice(findStart, nextFind);
+            const parsed = parseBlock(block);
+            if (parsed) {
               onEvent({
                 type: 'suggestion',
                 data: {
                   index: suggestionIndex++,
-                  original,
-                  replacement,
-                  reason,
+                  original: parsed.original,
+                  replacement: parsed.replacement,
+                  reason: parsed.reason,
                 },
               });
             }
 
-            // 移除已解析部分
-            buffer = reasonEnd !== undefined ? buffer.slice(reasonEnd) : '';
+            // 消费到下一个块起点
+            buffer = buffer.slice(nextFind);
           }
         },
       );
 
-      // 最终冲刷——解析 buffer 中可能残留的最后一条建议
-      if (
-        buffer.includes('<<<FIND>>>') &&
-        buffer.includes('<<<REPLACE>>>') &&
-        buffer.includes('<<<REASON>>>')
-      ) {
+      // 最终冲刷——解析 buffer 中残留的最后一个完整块
+      if (buffer.includes('<<<FIND>>>')) {
         const findStart = buffer.indexOf('<<<FIND>>>');
-        const replaceStart = buffer.indexOf('<<<REPLACE>>>');
-        const reasonStart = buffer.indexOf('<<<REASON>>>');
-        if (findStart < replaceStart && replaceStart < reasonStart) {
-          const original = buffer.slice(findStart + 10, replaceStart).trim();
-          const replacement = buffer.slice(replaceStart + 13, reasonStart).trim();
-          const reason = buffer.slice(reasonStart + 12).trim();
-          if (original && replacement) {
-            onEvent({
-              type: 'suggestion',
-              data: { index: suggestionIndex++, original, replacement, reason },
-            });
-          }
+        const tail = findStart >= 0 ? buffer.slice(findStart) : '';
+        const parsed = parseBlock(tail);
+        if (parsed) {
+          onEvent({
+            type: 'suggestion',
+            data: {
+              index: suggestionIndex++,
+              original: parsed.original,
+              replacement: parsed.replacement,
+              reason: parsed.reason,
+            },
+          });
         }
       }
     } catch (err: any) {
@@ -1296,6 +1359,8 @@ ${contentPreview}
             'Content-Type': 'application/json',
           },
           timeout: 120000,
+          httpAgent: this.httpAgent,
+          httpsAgent: this.httpsAgent,
         },
       );
 
@@ -1331,20 +1396,22 @@ ${contentPreview}
       this.buildPlannerPrompt(bookId, content, context),
     );
 
-    // 2. Writer Agent（多候选）
+    // 2. Writer Agent（多候选 — 并行生成）
     const candidateCount = request.candidateCount || 3;
-    const candidates: string[] = [];
-
-    for (let i = 0; i < candidateCount; i++) {
-      const writerResult = await this.callAgent(
+    const generatePromises = Array.from({ length: candidateCount }, (_, i) =>
+      this.callAgent(
         AgentType.WRITER,
         this.buildWriterPrompt(bookId, content, planningResult.result, context, 'generate'),
         0.7 + i * 0.1,
-      );
-      if (writerResult.result) candidates.push(writerResult.result);
+      ),
+    );
+    const settled = await Promise.allSettled(generatePromises);
+    const candidates: string[] = [];
+    for (const r of settled) {
+      if (r.status === 'fulfilled' && r.value.result) candidates.push(r.value.result);
     }
 
-    // 3. Consistency Agent
+    // 3. Consistency Agent（使用快速模型）
     let diagnostics: any[] = [];
     let warnings: string[] = [];
     if (candidates.length > 0) {
@@ -1352,6 +1419,7 @@ ${contentPreview}
         AgentType.CONSISTENCY,
         this.buildConsistencyPrompt(bookId, candidates[0], context),
         0.3,
+        { useFastModel: true },
       );
       const parsed = this.parseConsistencyResult(consistencyResult.result);
       diagnostics = parsed.issues;
@@ -1380,7 +1448,9 @@ ${contentPreview}
     const result = await this.callAgent(AgentType.WRITER, writerPrompt);
 
     const consistencyPrompt = this.buildConsistencyPrompt(bookId, result.result, context);
-    const consistencyResult = await this.callAgent(AgentType.CONSISTENCY, consistencyPrompt, 0.3);
+    const consistencyResult = await this.callAgent(AgentType.CONSISTENCY, consistencyPrompt, 0.3, {
+      useFastModel: true,
+    });
 
     const parsed = this.parseConsistencyResult(consistencyResult.result);
 
@@ -1823,19 +1893,36 @@ ${existingRelStr}
   }
 
   private async loadContext(bookId: string, chapterId?: string) {
-    const [worldSettings, plotLines, characters, foreshadowings] = await Promise.all([
-      this.prisma.worldSetting.findMany({ where: { bookId } }),
-      this.prisma.plotLine.findMany({ where: { bookId }, orderBy: { order: 'asc' } }),
-      this.prisma.character.findMany({
-        where: { bookId },
-        include: {
-          profile: true,
-          fromRels: { include: { toChar: true } },
-          toRels: { include: { fromChar: true } },
-        },
-      }),
-      this.prisma.foreshadowing.findMany({ where: { bookId, status: 'PENDING' } }),
-    ]);
+    // 内存缓存：bookId 级别（不含 chapterId，章节摘要单独查）
+    const cacheKey = bookId;
+    let base: { worldSettings: any; plotLines: any; characters: any; foreshadowings: any };
+
+    const cached = this.contextCache.get(cacheKey);
+    if (this.contextCacheTtlMs > 0 && cached && cached.expireAt > Date.now()) {
+      base = cached.data;
+    } else {
+      const [worldSettings, plotLines, characters, foreshadowings] = await Promise.all([
+        this.prisma.worldSetting.findMany({ where: { bookId } }),
+        this.prisma.plotLine.findMany({ where: { bookId }, orderBy: { order: 'asc' } }),
+        this.prisma.character.findMany({
+          where: { bookId },
+          include: {
+            profile: true,
+            fromRels: { include: { toChar: true } },
+            toRels: { include: { fromChar: true } },
+          },
+        }),
+        this.prisma.foreshadowing.findMany({ where: { bookId, status: 'PENDING' } }),
+      ]);
+      base = { worldSettings, plotLines, characters, foreshadowings };
+
+      if (this.contextCacheTtlMs > 0) {
+        this.contextCache.set(cacheKey, {
+          data: base,
+          expireAt: Date.now() + this.contextCacheTtlMs,
+        });
+      }
+    }
 
     let chapterSummary = '';
     if (chapterId) {
@@ -1843,14 +1930,12 @@ ${existingRelStr}
       chapterSummary = summary?.summary || '';
     }
 
-    return {
-      worldSettings,
-      plotLines,
-      characters,
-      foreshadowings,
-      chapterSummary,
-      ragContext: '',
-    };
+    return { ...base, chapterSummary, ragContext: '' };
+  }
+
+  /** 手动使指定书籍的上下文缓存失效（创建/更新资源后调用） */
+  invalidateContextCache(bookId: string) {
+    this.contextCache.delete(bookId);
   }
 
   // ==================== Agent 调用 ====================
@@ -1859,67 +1944,94 @@ ${existingRelStr}
     type: AgentType,
     prompt: string,
     temperature?: number,
-    options?: { maxTokens?: number; timeoutMs?: number; systemPrompt?: string },
+    options?: { maxTokens?: number; timeoutMs?: number; systemPrompt?: string; useFastModel?: boolean; modelOverride?: string },
   ): Promise<AgentResponse> {
-    try {
-      const startTime = Date.now();
-      const maxTokens = options?.maxTokens ?? 2000;
-      const timeoutMs = options?.timeoutMs ?? 120000;
+    const maxTokens = options?.maxTokens ?? 2000;
+    const timeoutMs = options?.timeoutMs ?? 120000;
+    const useFast = options?.useFastModel && this.fastModel;
+    const selectedModel = options?.modelOverride
+      ? this.resolveModel(options.modelOverride)
+      : useFast
+        ? this.fastModel
+        : this.model;
 
-      this.logger.log(
-        `[callAgent] ${type} | maxTokens=${maxTokens} | timeout=${timeoutMs}ms | prompt=${prompt.length}chars`,
-      );
+    this.logger.log(
+      `[callAgent] ${type} | model=${selectedModel} | maxTokens=${maxTokens} | timeout=${timeoutMs}ms | prompt=${prompt.length}chars`,
+    );
 
-      const response = await axios.post(
-        this.apiUrl,
-        {
-          model: this.model,
-          messages: [
-            { role: 'system', content: options?.systemPrompt ?? this.getSystemPrompt(type) },
-            { role: 'user', content: prompt },
-          ],
-          temperature: temperature ?? this.getTemperature(type),
-          max_tokens: maxTokens,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${this.apiKey}`,
-            'Content-Type': 'application/json',
+    // 最多重试 2 次（共 3 次尝试），仅对瞬态错误重试
+    const MAX_RETRIES = 2;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const startTime = Date.now();
+        const response = await axios.post(
+          this.apiUrl,
+          {
+            model: selectedModel,
+            messages: [
+              { role: 'system', content: options?.systemPrompt ?? this.getSystemPrompt(type) },
+              { role: 'user', content: prompt },
+            ],
+            temperature: temperature ?? this.getTemperature(type),
+            max_tokens: maxTokens,
           },
-          timeout: timeoutMs,
-        },
-      );
-
-      const result = response.data.choices[0].message.content;
-      const finishReason = response.data.choices[0].finish_reason;
-
-      if (finishReason === 'length') {
-        this.logger.warn(
-          `[callAgent] ${type} 输出被截断 (finish_reason=length)，当前 max_tokens=${maxTokens}`,
+          {
+            headers: {
+              Authorization: `Bearer ${this.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            timeout: timeoutMs,
+            httpAgent: this.httpAgent,
+            httpsAgent: this.httpsAgent,
+          },
         );
-      }
 
-      this.logger.log(
-        `[callAgent] ${type} 完成 | ${result?.length || 0}chars | ${Date.now() - startTime}ms`,
-      );
+        const result = response.data.choices[0].message.content;
+        const finishReason = response.data.choices[0].finish_reason;
 
-      return {
-        type,
-        result,
-        status: 'success',
-        duration: Date.now() - startTime,
-      };
-    } catch (error: any) {
-      this.logger.error(`Agent ${type} 调用失败: ${error.message}`);
-      if (error.response?.data) {
-        this.logger.error(`API 错误详情: ${JSON.stringify(error.response.data).slice(0, 500)}`);
+        if (finishReason === 'length') {
+          this.logger.warn(
+            `[callAgent] ${type} 输出被截断 (finish_reason=length)，当前 max_tokens=${maxTokens}`,
+          );
+        }
+
+        this.logger.log(
+          `[callAgent] ${type} 完成 | ${result?.length || 0}chars | ${Date.now() - startTime}ms`,
+        );
+
+        return {
+          type,
+          result,
+          status: 'success',
+          duration: Date.now() - startTime,
+        };
+      } catch (error: any) {
+        const status = error.response?.status;
+        const isRetryable = !status || status === 429 || status >= 500;
+
+        if (isRetryable && attempt < MAX_RETRIES) {
+          const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+          this.logger.warn(
+            `[callAgent] ${type} 第${attempt + 1}次失败 (status=${status || 'timeout'})，${delay}ms 后重试`,
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+
+        this.logger.error(`Agent ${type} 调用失败: ${error.message}`);
+        if (error.response?.data) {
+          this.logger.error(`API 错误详情: ${JSON.stringify(error.response.data).slice(0, 500)}`);
+        }
+        return {
+          type,
+          result: '',
+          status: 'failed',
+        };
       }
-      return {
-        type,
-        result: '',
-        status: 'failed',
-      };
     }
+
+    // 不可达，但 TS 需要
+    return { type, result: '', status: 'failed' };
   }
 
   /**
@@ -1930,17 +2042,24 @@ ${existingRelStr}
     type: AgentType,
     prompt: string,
     temperature: number,
-    options: { maxTokens?: number; timeoutMs?: number; systemPrompt?: string },
+    options: { maxTokens?: number; timeoutMs?: number; systemPrompt?: string; useFastModel?: boolean; modelOverride?: string },
     onChunk: (chunk: string) => void,
   ): Promise<string> {
     const maxTokens = options.maxTokens ?? 2000;
     const timeoutMs = options.timeoutMs ?? 120000;
-    this.logger.log(`[streamCallAgent] ${type} | maxTokens=${maxTokens} | timeout=${timeoutMs}ms`);
+    const useFast = options.useFastModel && this.fastModel;
+    const selectedModel = options.modelOverride
+      ? this.resolveModel(options.modelOverride)
+      : useFast
+        ? this.fastModel
+        : this.model;
+
+    this.logger.log(`[streamCallAgent] ${type} | model=${selectedModel} | maxTokens=${maxTokens} | timeout=${timeoutMs}ms`);
 
     const response = await axios.post(
       this.apiUrl,
       {
-        model: this.model,
+        model: selectedModel,
         messages: [
           { role: 'system', content: options.systemPrompt ?? this.getSystemPrompt(type) },
           { role: 'user', content: prompt },
@@ -1956,6 +2075,8 @@ ${existingRelStr}
         },
         timeout: timeoutMs,
         responseType: 'stream',
+        httpAgent: this.httpAgent,
+        httpsAgent: this.httpsAgent,
       },
     );
 

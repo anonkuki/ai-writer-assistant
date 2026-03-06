@@ -41,6 +41,7 @@
 - [Electron 桌面应用](#electron-桌面应用)
 - [工程化与安全](#工程化与安全)
 - [项目结构](#项目结构)
+- [更新日志 (2026-03-06)](#更新日志-2026-03-06)
 - [常见问题](#常见问题)
 
 ---
@@ -216,7 +217,9 @@ AI+ 面向 **可持续长篇写作生产** 而非一次性对话：
 
 | 提供商 | 模型 | 用途 | API 端点 |
 |--------|------|------|----------|
-| SiliconFlow | DeepSeek-V3.2 | 对话/续写/润色/补全 | `https://api.siliconflow.cn/v1/chat/completions` |
+| SiliconFlow | DeepSeek-V3.2 | 对话/续写/润色/补全（默认） | `https://api.siliconflow.cn/v1/chat/completions` |
+| SiliconFlow | GLM-5 | 用户可选切换的高质量模型 | `https://api.siliconflow.cn/v1/chat/completions` |
+| SiliconFlow | MiniMax-M2.5 | 用户可选切换的快速模型 | `https://api.siliconflow.cn/v1/chat/completions` |
 | SiliconFlow | BAAI/bge-large-zh-v1.5 | RAG 向量嵌入检索 | `https://api.siliconflow.cn/v1/embeddings` |
 
 支持 **SSE 流式输出**（续写/润色/对话）与 **常规 JSON 响应**（角色/大纲/关系建议）。
@@ -1042,6 +1045,149 @@ VITE_SOCKET_URL=https://your-api-domain.com
 
 ---
 
+## 更新日志 (2026-03-06)
+
+### 一、AI 模型性能优化
+
+针对 DeepSeek 模型调用速度慢的问题，在后端实施了六项核心优化：
+
+#### 1. HTTP 连接池 (Keep-Alive)
+
+在 `orchestrator.service.ts` 和 `ai.service.ts` 中引入 Node.js 原生 `http.Agent` / `https.Agent`，启用 `keepAlive: true`，最大 20 个并发 socket。避免每次 AI 请求重建 TCP/TLS 握手，显著降低请求延迟。
+
+#### 2. 上下文内存缓存
+
+`orchestrator.service.ts` 中的 `loadContext()` 方法新增内存缓存机制，缓存 TTL 可通过环境变量 `CONTEXT_CACHE_TTL_MS`（默认 30 秒）配置。同一 bookId+chapterId 在 TTL 内复用已有上下文，避免重复 4-5 次数据库查询。
+
+#### 3. 并行候选生成
+
+`generateWithPlanning()` 中的多候选生成从串行改为并行（`Promise.allSettled`），3 个 API 调用同时发起，与 `continueGeneration` 保持一致。
+
+#### 4. 指数退避重试
+
+所有 AI API 调用添加重试机制（最多 3 次），遇到 429（限流）、5xx（服务端错误）或超时时，按指数退避策略等待后重试。
+
+#### 5. 快速模型路由
+
+新增 `SILICONFLOW_FAST_MODEL` 环境变量，为一致性检查、思考阶段等轻量任务自动使用更快的小模型，减少旗舰模型排队压力。
+
+#### 6. 深度思考优化
+
+`streamDeepThinkChat()` 中的推理分析阶段（thinking phase）自动使用快速模型，而最终生成阶段使用用户选择的主模型。
+
+### 二、多模型动态切换
+
+#### 后端 API
+
+| 新增端点 | 方法 | 说明 |
+|----------|------|------|
+| `/ai/models` | GET | 返回可用模型列表和默认模型 |
+
+- `ChatMessageDto` 和 `DeepThinkChatDto` 新增可选 `modelId` 字段
+- `OrchestratorService` 新增 `availableModels` 白名单、`resolveModel()` 安全解析
+- 所有 AI 调用支持 `modelOverride` 参数，非白名单 ID 自动回退默认模型
+
+#### 当前可用模型
+
+| 模型 ID | 显示名 | 速度 | 说明 |
+|---------|--------|------|------|
+| `Pro/deepseek-ai/DeepSeek-V3.2` | DeepSeek V3.2 | 标准 | 旗舰模型，质量最高 |
+| `Pro/zhipuai/GLM-5` | GLM-5 | 标准 | 智谱高质量模型 |
+| `Pro/MiniMaxAI/MiniMax-M2.5` | MiniMax M2.5 | 快速 | 快速响应，均衡质量 |
+
+#### 前端实现
+
+- `agent.ts` Store 新增状态：`availableModels`、`selectedModelId`（localStorage 持久化）、`currentModelLabel`、`effectiveModelId`
+- `AiPanelHeader.vue` 顶部品牌区域改为可点击模型选择器，Teleport 到 body 的固定定位下拉菜单
+- 选择后，所有聊天/深度思考请求自动携带 `modelId` 参数
+- 内置 fallback 模型列表，API 不可用时仍可使用
+
+### 三、新手引导系统
+
+为首次注册用户提供分步悬浮引导卡片，覆盖首页和编辑器全部核心功能。
+
+#### 技术实现
+
+| 文件 | 用途 |
+|------|------|
+| `frontend/src/composables/useOnboarding.ts` | 通用引导 composable，管理步骤序列、位置计算、localStorage 完成标记 |
+| `frontend/src/components/OnboardingCard.vue` | 引导卡片组件：SVG mask 遮罩高亮 + 品牌色光圈 + 弹性动画 + 圆点进度 |
+
+#### 首页引导 (HomeView) — 4 步
+
+| 步骤 | 高亮目标 | 说明 |
+|------|---------|------|
+| 1 | 欢迎横幅 | 介绍智文写作助手整体功能 |
+| 2 | 统计卡片 | 讲解作品总数/今日字数/连续天数 |
+| 3 | 新建作品按钮 | 引导创建第一部作品 |
+| 4 | 书籍网格 | 说明点击进入编辑器 |
+
+#### 编辑器引导 (BookEditorView) — 9 步
+
+| 步骤 | 高亮目标 | 说明 |
+|------|---------|------|
+| 1 | 顶部工具栏 | 字体/历史/查找替换/撤销AI 操作 |
+| 2 | 章节管理面板 | 左侧章节列表和卷组结构 |
+| 3 | 富文本编辑器 | 核心写作区域和浮动格式栏 |
+| 4 | 右侧工具栏 | 9 个工具按钮总览 |
+| 5 | AI 助手按钮 | AI 对话和多种写作能力 |
+| 6 | 大纲与世界观 | 剧情线/伏笔/设定管理 |
+| 7 | 角色管理 | 角色档案和关系图谱 |
+| 8 | 智能润色 | Copilot 风格逐处修改 |
+| 9 | 底部状态栏 | 字数统计和快捷操作 |
+
+#### 视觉特性
+
+- SVG mask 挖空遮罩 + `rgba(15,23,42,0.5)` 蓝调半透明背景
+- 品牌蓝光圈高亮 (`boxShadow: 0 0 0 3px rgba(79,124,255,0.5)`)
+- 顶部渐变装饰条 (brand → indigo → purple)
+- `cubic-bezier(0.16,1,0.3,1)` 弹性入场动画
+- 圆点进度指示器（当前步骤为胶囊形态）
+- 最后一步显示 "开始使用 🎉"
+
+#### 行为逻辑
+
+- 仅首次访问触发（`localStorage` 标记 `onboarding_home_done` / `onboarding_editor_done`）
+- 数据加载完成后延迟启动（首页 600ms，编辑器 800ms）
+- 支持"上一步/下一步/跳过引导"操作
+- 完成或跳过后永久不再显示
+- 重制方法：`localStorage.removeItem('onboarding_home_done')`
+
+### 四、新增环境变量
+
+| 变量名 | 默认值 | 说明 |
+|--------|--------|------|
+| `SILICONFLOW_FAST_MODEL` | `Qwen/Qwen2.5-7B-Instruct` | 轻量任务使用的快速模型 |
+| `CONTEXT_CACHE_TTL_MS` | `30000` | 上下文缓存 TTL（毫秒） |
+
+### 五、变更文件汇总
+
+#### 后端
+| 文件 | 变更类型 |
+|------|---------|
+| `backend/src/agent/orchestrator.service.ts` | 重大修改：连接池、缓存、并行生成、重试、快速模型、模型切换 |
+| `backend/src/ai/ai.service.ts` | 修改：连接池、重试机制、默认模型更新 |
+| `backend/src/agent/agent.controller.ts` | 修改：新增 GET /ai/models 端点、modelId 透传 |
+| `backend/src/agent/dto/agent.dto.ts` | 修改：ChatMessageDto/DeepThinkChatDto 添加 modelId |
+| `backend/src/config/env.validation.ts` | 修改：新增环境变量验证 |
+| `backend/.env` / `.env.example` | 修改：新增配置项 |
+
+#### 前端
+| 文件 | 变更类型 |
+|------|---------|
+| `frontend/src/stores/agent.ts` | 修改：模型选择状态、API 调用携带 modelId |
+| `frontend/src/components/AiPanelHeader.vue` | 修改：模型选择下拉菜单（Teleport + fixed 定位） |
+| `frontend/src/composables/useOnboarding.ts` | **新增**：通用引导 composable |
+| `frontend/src/components/OnboardingCard.vue` | **新增**：引导卡片组件 |
+| `frontend/src/views/HomeView.vue` | 修改：data-guide 属性 + 引导集成 |
+| `frontend/src/views/BookEditorView.vue` | 修改：data-guide 属性 + 引导集成 |
+
+### 测试状态
+
+所有 8 个测试套件、104 个测试全部通过。
+
+---
+
 ## 常见问题
 
 ### Q: 启动报 `JWT_SECRET 未配置`
@@ -1131,6 +1277,8 @@ ai+/
 │   │   ├── components/
 │   │   │   ├── Sidebar.vue              # 侧边导航栏
 │   │   │   ├── ThreeLayerPanel.vue      # AI 三层面板（战略/战术/执行）
+│   │   │   ├── AiPanelHeader.vue        # AI 面板顶栏（含模型切换下拉）
+│   │   │   ├── OnboardingCard.vue       # 新手引导浮动卡片组件
 │   │   │   ├── CharacterEditor.vue      # 角色全屏编辑器（4 维管理）
 │   │   │   ├── WorldSettingEditor.vue   # 世界观全屏编辑器
 │   │   │   ├── PlotLineEditor.vue       # 剧情线全屏编辑器
@@ -1138,7 +1286,8 @@ ai+/
 │   │   │   ├── RelationshipGraph.vue    # SVG 力导向关系图
 │   │   │   └── InlinePolishPlugin.ts    # TipTap Copilot 行内润色插件
 │   │   ├── composables/
-│   │   │   └── useSocket.ts         # Socket.io 组合式函数
+│   │   │   ├── useSocket.ts         # Socket.io 组合式函数
+│   │   │   └── useOnboarding.ts     # 新手引导系统 composable
 │   │   ├── lib/
 │   │   │   ├── api.ts               # Axios HTTP 封装
 │   │   │   └── textToHtml.ts        # 文本 → HTML 转换

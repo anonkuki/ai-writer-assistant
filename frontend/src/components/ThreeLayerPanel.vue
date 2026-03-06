@@ -165,9 +165,46 @@ const commands = [
 ];
 const writingContent = computed(() => props.content || '');
 
+// === 命令结果 diff 状态 ===
+const commandResultDiff = ref<{
+  command: string;
+  oldContent: string;
+  newContent: string;
+  status: 'pending' | 'accepted' | 'rejected';
+} | null>(null);
+
 async function runAi() {
   if (!props.bookId || !writingContent.value) return;
-  await agentStore.runAgent(props.bookId, props.chapterId, writingContent.value, selectedCommand.value);
+  commandResultDiff.value = null;
+  const result = await agentStore.runAgent(props.bookId, props.chapterId, writingContent.value, selectedCommand.value);
+  if (result?.result) {
+    commandResultDiff.value = {
+      command: selectedCommand.value,
+      oldContent: writingContent.value,
+      newContent: result.result,
+      status: 'pending',
+    };
+  }
+}
+
+/** 接受命令结果 */
+function acceptCommandResult() {
+  if (!commandResultDiff.value) return;
+  const diff = commandResultDiff.value;
+  if (diff.command === 'continue') {
+    emit('insert', diff.newContent);
+  } else {
+    emit('apply', diff.newContent);
+  }
+  commandResultDiff.value = { ...diff, status: 'accepted' };
+  agentStore.reset();
+}
+
+/** 拒绝命令结果 */
+function rejectCommandResult() {
+  if (!commandResultDiff.value) return;
+  commandResultDiff.value = { ...commandResultDiff.value, status: 'rejected' };
+  agentStore.reset();
 }
 
 function applyToDocument() { if (agentStore.aiResult) emit('apply', agentStore.aiResult); }
@@ -971,13 +1008,73 @@ function getStatusText(status: string) {
             </div>
           </div>
 
-          <!-- AI 结果 -->
-          <div v-if="agentStore.aiResult && agentStore.chatMessages.length === 0" class="bg-surface-secondary rounded-xl p-3 shadow-sm">
-            <h3 class="text-sm font-medium text-text-primary mb-2">生成结果</h3>
-            <div class="text-xs text-text-primary whitespace-pre-wrap max-h-40 overflow-y-auto leading-relaxed">{{ agentStore.aiResult }}</div>
-            <div class="flex gap-2 mt-3">
-              <button @click="applyToDocument" class="flex-1 px-3 py-1.5 bg-brand text-white rounded-lg text-xs hover:bg-brand-dark transition-colors shadow-sm">应用修改</button>
-              <button @click="insertToDocument" class="flex-1 px-3 py-1.5 bg-white text-text-primary rounded-lg text-xs hover:bg-surface-hover border border-border transition-colors">插入内容</button>
+          <!-- AI 结果（带 diff 对比） -->
+          <div v-if="commandResultDiff && commandResultDiff.status === 'pending' && agentStore.chatMessages.length === 0" class="bg-surface-secondary rounded-xl overflow-hidden shadow-sm">
+            <div class="bg-gray-50 px-3 py-2 text-xs text-text-secondary font-medium border-b border-border flex items-center justify-between">
+              <span class="flex items-center gap-1.5">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5"/></svg>
+                {{ commandResultDiff.command === 'continue' ? '续写预览' : commandResultDiff.command === 'improve' ? '改进对比' : commandResultDiff.command === 'expand' ? '扩展对比' : commandResultDiff.command === 'summarize' ? '总结对比' : '生成对比' }}
+              </span>
+              <button @click="emit('showDiff', { oldContent: commandResultDiff.oldContent, newContent: commandResultDiff.newContent })" class="text-[10px] text-brand hover:text-brand-dark transition-colors">在编辑器预览</button>
+            </div>
+
+            <!-- 续写模式：仅展示新生成内容 -->
+            <template v-if="commandResultDiff.command === 'continue'">
+              <div class="max-h-[280px] overflow-y-auto">
+                <div class="bg-green-50/50 px-3 py-2">
+                  <div class="text-green-500 text-[10px] font-medium mb-1 flex items-center gap-1">
+                    <span class="inline-block w-1.5 h-1.5 rounded-sm bg-green-400"></span>
+                    续写内容 ({{ commandResultDiff.newContent.length }}字)
+                  </div>
+                  <div class="text-xs text-green-800/90 leading-relaxed whitespace-pre-wrap">{{ commandResultDiff.newContent.slice(0, 500) }}{{ commandResultDiff.newContent.length > 500 ? '...' : '' }}</div>
+                </div>
+              </div>
+            </template>
+
+            <!-- 改进/扩展/总结/生成模式：红绿 diff 对比 -->
+            <template v-else>
+              <div class="max-h-[280px] overflow-y-auto">
+                <div class="bg-red-50/50 px-3 py-2 border-b border-red-100/50">
+                  <div class="text-red-500 text-[10px] font-medium mb-1 flex items-center gap-1">
+                    <span class="inline-block w-1.5 h-1.5 rounded-sm bg-red-400"></span>
+                    原始内容 ({{ commandResultDiff.oldContent.length }}字)
+                  </div>
+                  <div class="text-xs text-red-800/70 leading-relaxed line-through whitespace-pre-wrap">{{ commandResultDiff.oldContent.slice(0, 300) }}{{ commandResultDiff.oldContent.length > 300 ? '...' : '' }}</div>
+                </div>
+                <div class="bg-green-50/50 px-3 py-2">
+                  <div class="text-green-500 text-[10px] font-medium mb-1 flex items-center gap-1">
+                    <span class="inline-block w-1.5 h-1.5 rounded-sm bg-green-400"></span>
+                    新内容 ({{ commandResultDiff.newContent.length }}字)
+                  </div>
+                  <div class="text-xs text-green-800/90 leading-relaxed whitespace-pre-wrap">{{ commandResultDiff.newContent.slice(0, 300) }}{{ commandResultDiff.newContent.length > 300 ? '...' : '' }}</div>
+                </div>
+              </div>
+            </template>
+
+            <!-- 接受/拒绝按钮 -->
+            <div class="flex gap-2 px-3 py-2.5 border-t border-border">
+              <button @click="acceptCommandResult" class="flex-1 px-3 py-1.5 bg-green-500 hover:bg-green-600 text-white rounded-lg text-xs font-medium transition-colors shadow-sm">
+                ✓ {{ commandResultDiff.command === 'continue' ? '追加到章节' : '接受变更' }}
+              </button>
+              <button @click="rejectCommandResult" class="flex-1 px-3 py-1.5 bg-white text-text-secondary rounded-lg text-xs border border-border hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors">
+                ✕ 拒绝
+              </button>
+            </div>
+          </div>
+
+          <!-- 命令结果已接受 -->
+          <div v-else-if="commandResultDiff && commandResultDiff.status === 'accepted' && agentStore.chatMessages.length === 0" class="bg-surface-secondary rounded-xl p-3 shadow-sm">
+            <div class="text-xs text-green-600 flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              {{ commandResultDiff.command === 'continue' ? '续写内容已追加' : '变更已应用' }}
+            </div>
+          </div>
+
+          <!-- 命令结果已拒绝 -->
+          <div v-else-if="commandResultDiff && commandResultDiff.status === 'rejected' && agentStore.chatMessages.length === 0" class="bg-surface-secondary rounded-xl p-3 shadow-sm">
+            <div class="text-xs text-text-muted flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9.75 9.75l4.5 4.5m0-4.5l-4.5 4.5M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              变更已撤回，内容未修改
             </div>
           </div>
 

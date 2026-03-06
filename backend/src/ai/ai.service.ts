@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
+import * as http from 'http';
+import * as https from 'https';
 import { DocumentService } from '../document/document.service';
 import { PrismaService } from '../prisma.service';
 
@@ -20,6 +22,10 @@ export class AiService {
   private readonly model: string;
   private readonly timeoutMs: number;
 
+  /** HTTP keep-alive 连接池 */
+  private readonly httpAgent = new http.Agent({ keepAlive: true, maxSockets: 10 });
+  private readonly httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 10 });
+
   constructor(
     private documentService: DocumentService,
     private prisma: PrismaService,
@@ -29,7 +35,7 @@ export class AiService {
     this.apiUrl =
       this.configService.get<string>('SILICONFLOW_API_URL') ||
       'https://api.siliconflow.cn/v1/chat/completions';
-    this.model = this.configService.get<string>('SILICONFLOW_MODEL') || 'deepseek-ai/DeepSeek-V3.2';
+    this.model = this.configService.get<string>('SILICONFLOW_MODEL') || 'Pro/deepseek-ai/DeepSeek-V3.2';
     this.timeoutMs = this.configService.get<number>('SILICONFLOW_TIMEOUT_MS') || 30000;
 
     if (!this.apiKey) {
@@ -391,41 +397,64 @@ export class AiService {
   }): Promise<string> {
     this.ensureAiReady();
 
-    const response = await axios.post(
-      this.apiUrl,
-      {
-        model: this.model,
-        messages: [
+    const MAX_RETRIES = 2;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        const response = await axios.post(
+          this.apiUrl,
           {
-            role: 'system',
-            content: options.systemPrompt,
+            model: this.model,
+            messages: [
+              {
+                role: 'system',
+                content: options.systemPrompt,
+              },
+              {
+                role: 'user',
+                content: options.prompt,
+              },
+            ],
+            temperature: options.temperature,
+            max_tokens: options.maxTokens,
           },
           {
-            role: 'user',
-            content: options.prompt,
+            timeout: this.timeoutMs,
+            headers: {
+              Authorization: `Bearer ${this.apiKey}`,
+              'Content-Type': 'application/json',
+            },
+            httpAgent: this.httpAgent,
+            httpsAgent: this.httpsAgent,
           },
-        ],
-        temperature: options.temperature,
-        max_tokens: options.maxTokens,
-      },
-      {
-        timeout: this.timeoutMs,
-        headers: {
-          Authorization: `Bearer ${this.apiKey}`,
-          'Content-Type': 'application/json',
-        },
-      },
-    );
+        );
 
-    const content = response.data?.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new BadGatewayException({
-        success: false,
-        message: 'AI 服务返回数据格式异常',
-      });
+        const content = response.data?.choices?.[0]?.message?.content;
+        if (!content) {
+          throw new BadGatewayException({
+            success: false,
+            message: 'AI 服务返回数据格式异常',
+          });
+        }
+
+        return content;
+      } catch (error: any) {
+        const status = error.response?.status;
+        const isRetryable = !status || status === 429 || status >= 500;
+
+        if (isRetryable && attempt < MAX_RETRIES) {
+          const delay = Math.min(1000 * Math.pow(2, attempt), 4000);
+          this.logger.warn(
+            `AI 请求第${attempt + 1}次失败 (status=${status || 'timeout'})，${delay}ms 后重试`,
+          );
+          await new Promise((r) => setTimeout(r, delay));
+          continue;
+        }
+        throw error;
+      }
     }
 
-    return content;
+    // 不可达
+    throw new BadGatewayException({ success: false, message: 'AI 服务调用失败' });
   }
 
   private wrapAiError(error: unknown, businessMessage: string): BadGatewayException {

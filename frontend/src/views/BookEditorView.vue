@@ -12,6 +12,8 @@ import Highlight from '@tiptap/extension-highlight';
 import TaskList from '@tiptap/extension-task-list';
 import TaskItem from '@tiptap/extension-task-item';
 import ThreeLayerPanel from '@/components/ThreeLayerPanel.vue';
+import OnboardingCard from '@/components/OnboardingCard.vue';
+import { useOnboarding, type GuideStep } from '@/composables/useOnboarding';
 import {
   InlinePolishExtension,
   polishPluginKey,
@@ -57,6 +59,77 @@ const MIN_SIDEBAR_W = 160;
 const MAX_SIDEBAR_W = 400;
 const MIN_RIGHT_W = 280;
 const MAX_RIGHT_W = 600;
+
+// ===== 编辑器新手引导 =====
+const editorGuideSteps: GuideStep[] = [
+  {
+    target: '[data-guide="editor-toolbar"]',
+    title: '顶部工具栏',
+    content: '包含字体设置、历史版本、查找替换、撤销AI修改等常用操作。右侧显示保存状态和发布按钮。',
+    placement: 'bottom',
+  },
+  {
+    target: '[data-guide="chapter-panel"]',
+    title: '章节管理面板',
+    content: '左侧显示所有章节和卷组结构。可以新建章节/卷、搜索、筛选状态，点击即可切换编辑。',
+    placement: 'right',
+  },
+  {
+    target: '[data-guide="editor-main"]',
+    title: '富文本编辑器',
+    content: '核心写作区域。支持加粗、斜体、高亮、引用等格式。选中文字时会弹出浮动工具栏。',
+    placement: 'top',
+  },
+  {
+    target: '[data-guide="right-toolbar"]',
+    title: '右侧工具栏',
+    content: '包含 9 个强力工具：AI助手、校对、拼字、大纲、角色、世界观设定、灵感、妙笔和智能润色。点击展开对应功能面板。',
+    placement: 'left',
+  },
+  {
+    target: '[data-guide="tool-ai"]',
+    title: 'AI 写作助手',
+    content: '点击打开 AI 对话面板。支持智能写作、情节发展、角色对话、深度思考等多种 AI 能力，是您的核心写作伴侣。',
+    placement: 'left',
+  },
+  {
+    target: '[data-guide="tool-outline"]',
+    title: '大纲与世界观',
+    content: '在这里管理剧情线、伏笔、时间线和世界观设定。AI 会基于这些设定生成更一致的内容。',
+    placement: 'left',
+  },
+  {
+    target: '[data-guide="tool-character"]',
+    title: '角色管理',
+    content: '创建和管理您的角色档案，包括性格、关系、情感变化、成长轨迹。还可以查看角色关系图谱。',
+    placement: 'left',
+  },
+  {
+    target: '[data-guide="tool-polish"]',
+    title: '智能润色',
+    content: '一键对全文进行 Copilot 风格的逐处修改，红绿对比显示每处变更，您可以逐个接受或跳过。',
+    placement: 'left',
+  },
+  {
+    target: '[data-guide="status-bar"]',
+    title: '底部状态栏',
+    content: '显示当前章节字数、计划剩余字数、纠错功能。可以快速新建章节。',
+    placement: 'top',
+  },
+];
+
+const {
+  isActive: showEditorGuide,
+  currentStep: editorStep,
+  currentStepIndex: editorStepIndex,
+  totalSteps: editorTotalSteps,
+  position: editorPos,
+  highlightRect: editorHighlight,
+  start: startEditorGuide,
+  next: nextEditorGuide,
+  prev: prevEditorGuide,
+  skip: skipEditorGuide,
+} = useOnboarding('onboarding_editor_done', editorGuideSteps);
 
 function loadPanelWidths(): { sidebarWidth: number; rightPanelWidth: number } {
   try {
@@ -402,6 +475,8 @@ onMounted(async () => {
   }
 
   await loadBook();
+  // 首次访问时启动编辑器引导
+  nextTick(() => { setTimeout(startEditorGuide, 800); });
 });
 onUnmounted(() => {
   document.removeEventListener('keydown', handlePolishKeydown);
@@ -615,11 +690,13 @@ function calculateWordCount(content: string) {
 function handleAgentApply(content: string) {
   if (!editor.value) return;
   pushSnapshot('AI 替换内容');
-  const sel = editor.value.state.selection;
-  if (!sel.empty) editor.value.commands.deleteSelection();
-  // 将纯文本转换为 HTML 段落格式，确保分段正确渲染
+  // 替换整个文档内容（用于改进/扩展/生成等替换类操作）
   const html = textToHtml(content);
-  editor.value.commands.insertContent(html);
+  editor.value.commands.setContent(html);
+  editorContent.value = editor.value.getHTML();
+  dirty.value = true;
+  saveStatusText.value = '本地实时保存中';
+  scheduleSave();
   agentStore.reset();
 }
 
@@ -685,6 +762,11 @@ function acceptCurrentSuggestion() {
   // 标记已接受
   agentStore.acceptPolishSuggestion(id);
 
+  // 润色替换后显式触发保存（isRemoteUpdate 跳过了 watcher）
+  dirty.value = true;
+  saveStatusText.value = '本地实时保存中';
+  scheduleSave();
+
   // 替换后需要重新映射所有建议的位置
   nextTick(() => rebuildPolishDecorations());
 }
@@ -713,6 +795,12 @@ function acceptAllSuggestions() {
   nextTick(() => { isRemoteUpdate.value = false; });
 
   agentStore.acceptAllPolish();
+
+  // 批量接受后显式触发保存（isRemoteUpdate 跳过了 watcher）
+  dirty.value = true;
+  saveStatusText.value = '本地实时保存中';
+  scheduleSave();
+
   nextTick(() => rebuildPolishDecorations());
 }
 
@@ -833,7 +921,7 @@ function goHome() { router.push('/'); }
 <template>
   <div class="flex-1 flex flex-col min-h-0 overflow-hidden bg-surface-secondary">
     <!-- ==================== 顶部工具栏 ==================== -->
-    <div class="h-11 bg-white border-b border-border flex items-center justify-between px-4 shrink-0">
+    <div class="h-11 bg-white border-b border-border flex items-center justify-between px-4 shrink-0" data-guide="editor-toolbar">
       <div class="flex items-center gap-3 min-w-0">
         <button @click="goHome" class="flex items-center gap-1.5 text-sm text-text-secondary hover:text-brand transition-colors">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
@@ -939,7 +1027,7 @@ function goHome() { router.push('/'); }
     <!-- ==================== 主要内容区 ==================== -->
     <div class="flex-1 flex min-h-0">
       <!-- ========== 左侧：章节列表 ========== -->
-      <aside class="bg-white border-r border-border flex flex-col shrink-0" :style="{ width: sidebarWidth + 'px' }">
+      <aside data-guide="chapter-panel" class="bg-white border-r border-border flex flex-col shrink-0" :style="{ width: sidebarWidth + 'px' }">
         <!-- 搜索 -->
         <div class="p-3 border-b border-border">
           <div class="relative">
@@ -1016,7 +1104,7 @@ function goHome() { router.push('/'); }
       ></div>
 
       <!-- ========== 中间：编辑器 ========== -->
-      <main class="flex-1 flex flex-col min-w-0 bg-white">
+      <main data-guide="editor-main" class="flex-1 flex flex-col min-w-0 bg-white">
         <template v-if="currentChapter">
           <!-- 章节标题区 -->
           <div class="px-12 pt-8 pb-4">
@@ -1132,8 +1220,8 @@ function goHome() { router.push('/'); }
           @dblclick="resetPanelWidth('right')"
         ></div>
         <!-- 右侧垂直工具栏 -->
-        <div class="w-12 bg-white border-l border-border flex flex-col items-center py-3 gap-0.5">
-          <button @click="activeRightPanel = activeRightPanel === 'ai' ? null : 'ai'"
+        <div data-guide="right-toolbar" class="w-12 bg-white border-l border-border flex flex-col items-center py-3 gap-0.5">
+          <button data-guide="tool-ai" @click="activeRightPanel = activeRightPanel === 'ai' ? null : 'ai'"
             class="w-9 h-9 flex flex-col items-center justify-center rounded-lg transition-colors text-[9px] leading-tight gap-0.5" :class="activeRightPanel === 'ai' ? 'bg-brand-50 text-brand' : 'text-text-muted hover:bg-surface-hover hover:text-text-secondary'" title="AI 助手">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z"/></svg>
             <span>AI</span>
@@ -1149,12 +1237,12 @@ function goHome() { router.push('/'); }
             <span class="text-sm">字</span>
             <span>拼字</span>
           </button>
-          <button @click="activeRightPanel = activeRightPanel === 'outline' ? null : 'outline'"
+          <button data-guide="tool-outline" @click="activeRightPanel = activeRightPanel === 'outline' ? null : 'outline'"
             class="w-9 h-9 flex flex-col items-center justify-center rounded-lg transition-colors text-[9px] leading-tight gap-0.5" :class="activeRightPanel === 'outline' ? 'bg-brand-50 text-brand' : 'text-text-muted hover:bg-surface-hover hover:text-text-secondary'" title="大纲">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M8.25 6.75h12M8.25 12h12m-12 5.25h12M3.75 6.75h.007v.008H3.75V6.75zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zM3.75 12h.007v.008H3.75V12zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm-.375 5.25h.007v.008H3.75v-.008zm.375 0a.375.375 0 11-.75 0 .375.375 0 01.75 0z"/></svg>
             <span>大纲</span>
           </button>
-          <button @click="activeRightPanel = activeRightPanel === 'character' ? null : 'character'"
+          <button data-guide="tool-character" @click="activeRightPanel = activeRightPanel === 'character' ? null : 'character'"
             class="w-9 h-9 flex flex-col items-center justify-center rounded-lg transition-colors text-[9px] leading-tight gap-0.5" :class="activeRightPanel === 'character' ? 'bg-brand-50 text-brand' : 'text-text-muted hover:bg-surface-hover hover:text-text-secondary'" title="角色">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M15.75 6a3.75 3.75 0 11-7.5 0 3.75 3.75 0 017.5 0zM4.501 20.118a7.5 7.5 0 0114.998 0A17.933 17.933 0 0112 21.75c-2.676 0-5.216-.584-7.499-1.632z"/></svg>
             <span>角色</span>
@@ -1176,7 +1264,7 @@ function goHome() { router.push('/'); }
             <span>妙笔</span>
           </button>
           <div class="w-6 h-px bg-border my-1"></div>
-          <button @click="startInlinePolish" :disabled="polishMode || !currentChapter"
+          <button data-guide="tool-polish" @click="startInlinePolish" :disabled="polishMode || !currentChapter"
             class="w-9 h-9 flex flex-col items-center justify-center rounded-lg transition-colors text-[9px] leading-tight gap-0.5"
             :class="polishMode ? 'bg-green-50 text-green-600 ring-1 ring-green-300' : 'text-text-muted hover:bg-surface-hover hover:text-text-secondary'"
             title="智能润色（Copilot风格逐处修改）">
@@ -1206,7 +1294,7 @@ function goHome() { router.push('/'); }
     </div>
 
     <!-- ==================== 底部栏 ==================== -->
-    <div class="h-9 bg-white border-t border-border flex items-center justify-between px-4 text-xs shrink-0">
+    <div data-guide="status-bar" class="h-9 bg-white border-t border-border flex items-center justify-between px-4 text-xs shrink-0">
       <div class="flex items-center gap-4">
         <button @click="createChapter" class="flex items-center gap-1 text-brand hover:text-brand-dark transition-colors">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/></svg>
@@ -1297,6 +1385,23 @@ function goHome() { router.push('/'); }
         </ul>
       </div>
     </div>
+
+    <!-- 新手引导卡片 -->
+    <OnboardingCard
+      v-if="showEditorGuide && editorStep"
+      :title="editorStep.title"
+      :content="editorStep.content"
+      :step-index="editorStepIndex"
+      :total-steps="editorTotalSteps"
+      :position="editorPos"
+      :arrow-top="editorPos.arrowTop"
+      :arrow-left="editorPos.arrowLeft"
+      :arrow-direction="editorPos.arrowDirection"
+      :highlight-rect="editorHighlight"
+      @next="nextEditorGuide"
+      @prev="prevEditorGuide"
+      @skip="skipEditorGuide"
+    />
   </div>
 </template>
 <style scoped>

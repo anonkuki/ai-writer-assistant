@@ -1,9 +1,51 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, nextTick } from 'vue';
 import { useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { useBookStore, type Book } from '@/stores/book';
 import { apiPost } from '@/lib/api';
+import { useOnboarding, type GuideStep } from '@/composables/useOnboarding';
+import OnboardingCard from '@/components/OnboardingCard.vue';
+
+const homeGuideSteps: GuideStep[] = [
+  {
+    target: '[data-guide="welcome-banner"]',
+    title: '欢迎来到智文写作助手 🎉',
+    content: '这里是您的专属写作工作台。智文集成了 AI 写作、角色管理、世界观设定等全套创作工具，帮助您高效写出精彩作品。',
+    placement: 'bottom',
+  },
+  {
+    target: '[data-guide="stats-cards"]',
+    title: '写作数据总览',
+    content: '这里实时显示您的写作进度：作品总数、今日字数和连续创作天数。持续写作，保持连续打卡吧！',
+    placement: 'bottom',
+  },
+  {
+    target: '[data-guide="new-book-btn"]',
+    title: '创建新作品',
+    content: '点击“新建作品”开始您的第一部作品。可以设置标题、简介和封面，随时开始您的创作之旅。',
+    placement: 'bottom',
+  },
+  {
+    target: '[data-guide="book-grid"]',
+    title: '作品书架',
+    content: '您的所有作品都会展示在这里。点击任意一部作品即可进入编辑器，开始写作和编辑。',
+    placement: 'top',
+  },
+];
+
+const {
+  isActive: showHomeGuide,
+  currentStep: homeStep,
+  currentStepIndex: homeStepIndex,
+  totalSteps: homeTotalSteps,
+  position: homePos,
+  highlightRect: homeHighlight,
+  start: startHomeGuide,
+  next: nextHomeGuide,
+  prev: prevHomeGuide,
+  skip: skipHomeGuide,
+} = useOnboarding('onboarding_home_done', homeGuideSteps);
 
 const router = useRouter();
 const authStore = useAuthStore();
@@ -29,6 +71,8 @@ onMounted(async () => {
   } catch (err) {
     console.error('加载数据失败:', err);
   }
+  // 首次访问时启动引导
+  nextTick(() => { setTimeout(startHomeGuide, 600); });
 });
 
 async function createNewBook() {
@@ -112,7 +156,7 @@ function formatWordCount(count?: number | null) {
         <div class="flex items-center justify-between">
           <!-- 欢迎横幅 -->
           <div class="flex-1 relative">
-            <div class="bg-gradient-to-r from-brand-50 via-blue-50 to-white rounded-2xl p-6 relative overflow-hidden shadow-sm border border-brand/10">
+            <div data-guide="welcome-banner" class="bg-gradient-to-r from-brand-50 via-blue-50 to-white rounded-2xl p-6 relative overflow-hidden shadow-sm border border-brand/10">
               <div class="relative z-10 flex items-center gap-5">
                 <div class="w-16 h-16 rounded-2xl bg-brand border-2 border-white shadow-md flex items-center justify-center p-3 shrink-0 ring-1 ring-brand/10">
                   <img src="/logo.png" alt="智文写作助手" class="w-full h-full object-contain filter brightness-0 invert" />
@@ -134,7 +178,7 @@ function formatWordCount(count?: number | null) {
           </div>
 
           <!-- 统计卡片 -->
-          <div v-if="bookStore.stats && bookStore.writingStats" class="ml-8 flex gap-4 shrink-0">
+          <div v-if="bookStore.stats && bookStore.writingStats" data-guide="stats-cards" class="ml-8 flex gap-4 shrink-0">
             <div class="bg-surface-secondary rounded-xl px-5 py-4 text-center min-w-[100px]">
               <div class="text-2xl font-bold text-brand">{{ bookStore.stats.totalBooks }}</div>
               <div class="text-xs text-text-muted mt-1">作品总数</div>
@@ -156,7 +200,7 @@ function formatWordCount(count?: number | null) {
     <div class="bg-white border-b border-border">
       <div class="max-w-content mx-auto px-6 py-3 flex items-center justify-between">
         <div class="flex items-center gap-3">
-          <button @click="showNewBookModal = true" class="btn-primary flex items-center gap-2">
+          <button data-guide="new-book-btn" @click="showNewBookModal = true" class="btn-primary flex items-center gap-2">
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
               <path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15"/>
             </svg>
@@ -183,7 +227,7 @@ function formatWordCount(count?: number | null) {
           加载中...
         </div>
 
-        <div v-else-if="bookStore.books.length > 0" class="grid gap-5 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+        <div v-else-if="bookStore.books.length > 0" data-guide="book-grid" class="grid gap-5 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           <div
             v-for="book in bookStore.books"
             :key="book.id"
@@ -281,5 +325,22 @@ function formatWordCount(count?: number | null) {
         </div>
       </div>
     </div>
+
+    <!-- 新手引导卡片 -->
+    <OnboardingCard
+      v-if="showHomeGuide && homeStep"
+      :title="homeStep.title"
+      :content="homeStep.content"
+      :step-index="homeStepIndex"
+      :total-steps="homeTotalSteps"
+      :position="homePos"
+      :arrow-top="homePos.arrowTop"
+      :arrow-left="homePos.arrowLeft"
+      :arrow-direction="homePos.arrowDirection"
+      :highlight-rect="homeHighlight"
+      @next="nextHomeGuide"
+      @prev="prevHomeGuide"
+      @skip="skipHomeGuide"
+    />
   </div>
 </template>
