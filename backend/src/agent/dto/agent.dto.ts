@@ -307,6 +307,37 @@ export class AssistContentDto {
   currentData: Record<string, any>;
 }
 
+// ==================== 多步编排 ====================
+
+export class OrchestrateDto {
+  @IsString()
+  @IsNotEmpty()
+  bookId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(5000)
+  message: string;
+
+  @IsString()
+  @IsOptional()
+  chapterId?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(20000)
+  currentContent?: string;
+
+  @IsString()
+  @IsOptional()
+  modelId?: string;
+
+  /** 已批准的步骤计划（用于确认后执行） */
+  @IsArray()
+  @IsOptional()
+  approvedSteps?: Array<{ id: string; title: string; description: string; type: string }>;
+}
+
 // ==================== 全文分析（保留） ====================
 
 export class AnalyzeFullTextDto {
@@ -485,6 +516,41 @@ export class ResolveForeshadowingDto {
   @IsString()
   @IsOptional()
   resolveAt?: string;
+}
+
+// ==================== Outlines (章纲) ====================
+
+export class CreateOutlineDto {
+  @IsString()
+  @IsNotEmpty()
+  bookId: string;
+
+  @IsString()
+  @MinLength(1)
+  @MaxLength(200)
+  title: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(10000)
+  content?: string;
+}
+
+export class UpdateOutlineDto {
+  @IsString()
+  @IsOptional()
+  @MaxLength(200)
+  title?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(10000)
+  content?: string;
+
+  @IsInt()
+  @Min(0)
+  @IsOptional()
+  order?: number;
 }
 
 // ==================== Character Profile ====================

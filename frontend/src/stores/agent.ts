@@ -238,6 +238,36 @@ export interface PlanExecStatus {
   details?: string;
 }
 
+/**
+ * 多步编排 - 步骤定义
+ */
+export interface OrchestrationStep {
+  id: string;
+  title: string;
+  description: string;
+  type: string;
+  status: 'pending' | 'running' | 'done' | 'failed';
+  thinking?: string;
+  result?: string;
+  wordCount?: number;
+}
+
+/**
+ * 多步编排状态
+ */
+export interface OrchestrationState {
+  active: boolean;
+  steps: OrchestrationStep[];
+  currentStepIndex: number;
+  phase: string;
+  planThinking: string;
+  msgId: string;
+  bookId: string;
+  message: string;
+  chapterId?: string;
+  currentContent?: string;
+}
+
 export const useAgentStore = defineStore('agent', () => {
 
   // ===== SSE 事件解析器 =====
@@ -250,27 +280,41 @@ export const useAgentStore = defineStore('agent', () => {
         const lines = buffer.split('\n');
         // 最后一行可能不完整，留到下次
         buffer = lines.pop() || '';
+        const failedLines: string[] = [];
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue;
           const payload = line.slice(6).trim();
           if (payload === '[DONE]') continue;
           if (!payload) continue;
+          // 先尝试 JSON 解析，再调用回调 — 分开处理避免吞掉回调异常
+          let parsed: any;
           try {
-            const event = JSON.parse(payload);
-            onEvent(event);
+            parsed = JSON.parse(payload);
           } catch {
-            // JSON 不完整，放回 buffer 等下一次追加
-            buffer = line + '\n' + buffer;
+            // JSON 不完整，暂存等下一次追加
+            failedLines.push(line);
+            continue;
           }
+          // JSON 解析成功，调用回调 — 回调抛出的错误必须向外传播
+          onEvent(parsed);
+        }
+        // 将所有 JSON 解析失败的行放回 buffer 前面
+        if (failedLines.length > 0) {
+          buffer = failedLines.join('\n') + '\n' + buffer;
         }
       },
       flush() {
-        // 处理残留
-        if (buffer.startsWith('data: ')) {
-          const payload = buffer.slice(6).trim();
-          if (payload && payload !== '[DONE]') {
-            try { onEvent(JSON.parse(payload)); } catch { /* ignore */ }
-          }
+        // 处理残留 buffer 中所有可能的事件行
+        if (!buffer.trim()) { buffer = ''; return; }
+        const lines = buffer.split('\n');
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6).trim();
+          if (payload === '[DONE]') continue;
+          if (!payload) continue;
+          let parsed: any;
+          try { parsed = JSON.parse(payload); } catch { continue; }
+          onEvent(parsed);
         }
         buffer = '';
       },
@@ -301,6 +345,9 @@ export const useAgentStore = defineStore('agent', () => {
   /** 伏笔 */
   const foreshadowings = ref<Foreshadowing[]>([]);
 
+  /** 章纲（章节大纲） */
+  const outlines = ref<Array<{ id: string; title: string; content: string; order: number }>>([]);
+
   /** 角色列表 */
   const characters = ref<CharacterProfile[]>([]);
 
@@ -329,6 +376,18 @@ export const useAgentStore = defineStore('agent', () => {
 
   /** 计划执行状态 */
   const planExecStatus = ref<PlanExecStatus | null>(null);
+
+  /** 多步编排状态 */
+  const orchestration = ref<OrchestrationState>({
+    active: false,
+    steps: [],
+    currentStepIndex: -1,
+    phase: '',
+    planThinking: '',
+    msgId: '',
+    bookId: '',
+    message: '',
+  });
 
   /** 聊天加载状态 */
   const chatLoading = ref(false);
@@ -513,6 +572,9 @@ export const useAgentStore = defineStore('agent', () => {
         if (done) break;
         parser.feed(decoder.decode(value, { stream: true }));
       }
+      // 刷新 TextDecoder 残留字节，再刷新 SSE parser
+      const decoderRest = decoder.decode();
+      if (decoderRest) parser.feed(decoderRest);
       parser.flush();
 
       // 确保 loading 关闭
@@ -619,6 +681,8 @@ export const useAgentStore = defineStore('agent', () => {
         if (done) break;
         parser.feed(decoder.decode(value, { stream: true }));
       }
+      const decoderRest2 = decoder.decode();
+      if (decoderRest2) parser.feed(decoderRest2);
       parser.flush();
       polishLoading.value = false;
     } catch (err: any) {
@@ -893,19 +957,21 @@ export const useAgentStore = defineStore('agent', () => {
    */
   async function loadContext(bookId: string) {
     try {
-      const [ws, pl, fs, chars, rels] = await Promise.all([
+      const [ws, pl, fs, chars, rels, ol] = await Promise.all([
         axios.get(`${API_URL}/ai/world-settings/${bookId}`),
         axios.get(`${API_URL}/ai/plot-lines/${bookId}`),
         axios.get(`${API_URL}/ai/foreshadowings/${bookId}`),
         axios.get(`${API_URL}/ai/characters/${bookId}`),
         axios.get(`${API_URL}/ai/relationships/${bookId}`),
+        axios.get(`${API_URL}/ai/outlines/${bookId}`),
       ]);
 
-      worldSettings.value = ws.data.data || [];
-      plotLines.value = pl.data.data || [];
-      foreshadowings.value = fs.data.data || [];
-      characters.value = chars.data.data || [];
-      relationships.value = rels.data.data || [];
+      worldSettings.value = ws.data.data || ws.data || [];
+      plotLines.value = pl.data.data || pl.data || [];
+      foreshadowings.value = fs.data.data || fs.data || [];
+      characters.value = chars.data.data || chars.data || [];
+      relationships.value = rels.data.data || rels.data || [];
+      outlines.value = ol.data.data || ol.data || [];
     } catch (err: any) {
       console.error('加载上下文失败:', err);
       error.value = err.message;
@@ -1151,6 +1217,46 @@ export const useAgentStore = defineStore('agent', () => {
     } catch (err: any) { error.value = err.message; }
   }
 
+  /** 创建章纲 */
+  async function createOutline(bookId: string, title: string, content?: string) {
+    try {
+      const response = await axios.post(`${API_URL}/ai/outlines`, { bookId, title, content });
+      await loadContext(bookId);
+      return response.data;
+    } catch (err: any) { error.value = err.message; return null; }
+  }
+
+  /** 更新章纲 */
+  async function updateOutline(id: string, bookId: string, input: { title?: string; content?: string; order?: number }) {
+    try {
+      await axios.put(`${API_URL}/ai/outlines/${id}`, input);
+      await loadContext(bookId);
+    } catch (err: any) { error.value = err.message; }
+  }
+
+  /** 删除章纲 */
+  async function deleteOutline(id: string, bookId: string) {
+    try {
+      await axios.delete(`${API_URL}/ai/outlines/${id}`);
+      await loadContext(bookId);
+    } catch (err: any) { error.value = err.message; }
+  }
+
+  /** 写完章节后同步内在设定（角色、剧情线、伏笔、世界观） */
+  async function syncInternals(bookId: string, chapterId: string): Promise<string[]> {
+    try {
+      const res = await axios.post(`${API_URL}/ai/sync-internals`, { bookId, chapterId });
+      const updates: string[] = res.data?.updates || [];
+      if (updates.length > 0) {
+        await loadContext(bookId);
+      }
+      return updates;
+    } catch (err: any) {
+      error.value = err.message;
+      return [];
+    }
+  }
+
   /** AI 辅助编辑——调用后端返回字段建议 */
   async function assistContent(
     bookId: string,
@@ -1312,6 +1418,8 @@ export const useAgentStore = defineStore('agent', () => {
         if (done) break;
         parser.feed(decoder.decode(value, { stream: true }));
       }
+      const decoderRest3 = decoder.decode();
+      if (decoderRest3) parser.feed(decoderRest3);
       parser.flush();
 
       // 最终更新消息，附带可操作的建议
@@ -1403,8 +1511,14 @@ export const useAgentStore = defineStore('agent', () => {
     try {
       const history = chatMessages.value
         .filter(m => m.id !== userMsg.id && m.id !== aiMsgId)
+        // 过滤掉 autoExecuteAction 和编排产生的状态消息（不是有意义的对话）
+        .filter(m => !m.id.endsWith('_auto') && !m.id.endsWith('_orch'))
         .slice(-10)
-        .map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: m.content }));
+        .map(m => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          // 截断过长的历史消息，防止上下文溢出
+          content: m.content.length > 800 ? m.content.slice(0, 800) + '...(已截断)' : m.content,
+        }));
 
       const authToken = localStorage.getItem('token');
       const response = await fetch(endpoint, {
@@ -1434,6 +1548,7 @@ export const useAgentStore = defineStore('agent', () => {
       let suggestedActions: any[] | undefined;
       let firstToken = true;
       let inThinkingPhase = false;
+      let tokenReply = ''; // 保留原始 token 累积文本，不被 done 事件覆写（用于 ACTIONS 降级提取）
 
       const parser = createSSEParser((event) => {
         // Deep think events
@@ -1477,11 +1592,14 @@ export const useAgentStore = defineStore('agent', () => {
             firstToken = false;
           }
           fullReply += event.data.text;
+          tokenReply += event.data.text; // 保留原始 token 文本
+          // 实时显示时清理 ACTIONS 标签，避免用户看到原始标记
+          const displayText = fullReply.replace(/<!--ACTIONS:[\s\S]*?-->/g, '').trim();
           const msgIdx = chatMessages.value.findIndex(m => m.id === aiMsgId);
           if (msgIdx >= 0) {
             chatMessages.value[msgIdx] = {
               ...chatMessages.value[msgIdx],
-              content: fullReply,
+              content: displayText || '正在分析...',
             };
           }
         } else if (event.type === 'done') {
@@ -1498,16 +1616,50 @@ export const useAgentStore = defineStore('agent', () => {
         if (done) break;
         parser.feed(decoder.decode(value, { stream: true }));
       }
+      const decoderRest4 = decoder.decode();
+      if (decoderRest4) parser.feed(decoderRest4);
       parser.flush();
 
       agentStatus.value = { type: 'WRITER', status: 'completed', message: '回复完成' };
+
+      // 如果 done 事件未收到或未携带 suggestedActions，尝试从原始 token 文本中提取 ACTIONS
+      // 注意：fullReply 可能已被 done 事件覆写（ACTIONS 已被后端清除），所以用 tokenReply
+      if (!suggestedActions) {
+        const actionsMatch = (tokenReply || fullReply).match(/<!--ACTIONS:([\s\S]*?)-->/);
+        if (actionsMatch) {
+          try {
+            const parsed = JSON.parse(actionsMatch[1].trim());
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              suggestedActions = parsed;
+              console.log('[sendChat] 从原始回复中提取到 suggestedActions:', suggestedActions.length);
+            }
+          } catch { /* 解析失败则忽略 */ }
+        }
+      }
+
+      // 清理回复中残留的 ACTIONS 标签（前端不应显示）
+      let displayContent = fullReply.replace(/<!--ACTIONS:[\s\S]*?-->/g, '').trim();
+      // 同时清理未闭合的 ACTIONS 标签残留
+      const incompleteIdx = displayContent.indexOf('<!--ACTIONS:');
+      if (incompleteIdx !== -1) {
+        displayContent = displayContent.slice(0, incompleteIdx).trim();
+      }
+      // 如果清理后为空但有操作，显示操作说明
+      if (!displayContent && suggestedActions?.length) {
+        displayContent = `已分析您的需求，正在执行操作...`;
+      }
+      // 兜底：如果仍然为空，提供友好的引导文案（而非报错）
+      if (!displayContent) {
+        console.warn('[sendChat] AI 返回内容为空，fullReply 长度:', fullReply.length, '| suggestedActions:', suggestedActions);
+        displayContent = '我已收到您的请求。请尝试更具体地描述您的需求，例如：\n\n• "给出下一章的三幕式章纲"\n• "续写当前章节"\n• "补全世界观设定"\n• "分析当前章节内容"';
+      }
 
       // 最终更新
       const msgIdx = chatMessages.value.findIndex(m => m.id === aiMsgId);
       if (msgIdx >= 0) {
         chatMessages.value[msgIdx] = {
           ...chatMessages.value[msgIdx],
-          content: fullReply || '无回复',
+          content: displayContent,
           suggestedActions,
           thinking: thinkingText || undefined,
           isThinking: false,
@@ -1527,6 +1679,456 @@ export const useAgentStore = defineStore('agent', () => {
       return chatMessages.value.find(m => m.id === aiMsgId)!;
     } finally {
       chatLoading.value = false;
+    }
+  }
+
+  /**
+   * 多步编排执行 (SSE 流式) — Copilot 风格的任务分解→逐步思考→执行
+   */
+  async function startOrchestration(
+    bookId: string,
+    message: string,
+    chapterId?: string,
+    currentContent?: string,
+    signal?: AbortSignal,
+  ) {
+    chatLoading.value = true;
+    error.value = null;
+    agentStatus.value = { type: 'PLANNER', status: 'thinking', message: '正在分析任务...' };
+
+    // 重置编排状态
+    orchestration.value = {
+      active: true,
+      steps: [],
+      currentStepIndex: -1,
+      phase: 'planning',
+      planThinking: '',
+      msgId: '',
+      bookId,
+      message,
+      chapterId,
+      currentContent,
+    };
+
+    // 插入用户消息
+    const userMsg: ChatMessage = {
+      id: `msg_${Date.now()}_user`,
+      role: 'user',
+      content: message,
+      timestamp: Date.now(),
+    };
+    chatMessages.value.push(userMsg);
+
+    // 插入编排占位消息
+    const orchMsgId = `msg_${Date.now()}_orch`;
+    orchestration.value.msgId = orchMsgId;
+    chatMessages.value.push({
+      id: orchMsgId,
+      role: 'assistant',
+      content: '🔄 正在分析任务并制定执行计划...',
+      timestamp: Date.now(),
+      isThinking: true,
+      thinking: '',
+    });
+
+    try {
+      const authToken = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/ai/orchestrate/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          bookId,
+          message,
+          ...(chapterId && { chapterId }),
+          ...(currentContent && { currentContent: currentContent.slice(-15000) }),
+          ...(selectedModelId.value && { modelId: selectedModelId.value }),
+        }),
+        signal,
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+
+      const parser = createSSEParser((event) => {
+        const msgIdx = chatMessages.value.findIndex(m => m.id === orchMsgId);
+
+        if (event.type === 'phase') {
+          orchestration.value.phase = event.data.phase;
+          agentStatus.value = { type: 'PLANNER', status: 'thinking', message: event.data.message };
+
+        } else if (event.type === 'plan_thinking') {
+          // 任务分解的思考过程
+          orchestration.value.planThinking += event.data.text;
+          if (msgIdx >= 0) {
+            chatMessages.value[msgIdx] = {
+              ...chatMessages.value[msgIdx],
+              thinking: orchestration.value.planThinking,
+              isThinking: true,
+            };
+          }
+
+        } else if (event.type === 'step_plan') {
+          // 任务计划已生成
+          orchestration.value.steps = event.data.steps.map((s: any) => ({
+            ...s,
+            status: 'pending' as const,
+            thinking: '',
+            result: '',
+          }));
+
+          // 更新消息为任务清单（保留 thinking）
+          if (msgIdx >= 0) {
+            const stepList = orchestration.value.steps.map((s, i) =>
+              `${i + 1}. ⏳ ${s.title}: ${s.description}`
+            ).join('\n');
+            chatMessages.value[msgIdx] = {
+              ...chatMessages.value[msgIdx],
+              content: `📋 **执行计划** (${orchestration.value.steps.length} 步)\n\n${stepList}`,
+              isThinking: false,
+            };
+          }
+
+        } else if (event.type === 'await_approval') {
+          // 等待用户确认
+          orchestration.value.phase = 'awaiting_approval';
+          chatLoading.value = false;
+          agentStatus.value = { type: 'PLANNER', status: 'completed', message: '计划已生成，等待确认...' };
+
+          if (msgIdx >= 0) {
+            const stepList = orchestration.value.steps.map((s, i) =>
+              `${i + 1}. ⏳ ${s.title}: ${s.description}`
+            ).join('\n');
+            chatMessages.value[msgIdx] = {
+              ...chatMessages.value[msgIdx],
+              content: `📋 **执行计划** (${orchestration.value.steps.length} 步)\n\n${stepList}\n\n_请确认后开始执行_`,
+              isThinking: false,
+            };
+          }
+
+        } else if (event.type === 'step_start') {
+          const stepIdx = event.data.stepIndex;
+          orchestration.value.currentStepIndex = stepIdx;
+          if (orchestration.value.steps[stepIdx]) {
+            orchestration.value.steps[stepIdx].status = 'running';
+            orchestration.value.steps[stepIdx].thinking = '';
+          }
+          agentStatus.value = {
+            type: 'WRITER',
+            status: 'thinking',
+            message: `步骤 ${stepIdx + 1}/${orchestration.value.steps.length}: ${event.data.title}`,
+          };
+          updateOrchestrationMessage(orchMsgId);
+
+        } else if (event.type === 'step_thinking') {
+          const stepIdx = orchestration.value.steps.findIndex(s => s.id === event.data.stepId);
+          if (stepIdx >= 0) {
+            orchestration.value.steps[stepIdx].thinking =
+              (orchestration.value.steps[stepIdx].thinking || '') + event.data.text;
+            updateOrchestrationMessage(orchMsgId);
+          }
+
+        } else if (event.type === 'step_result') {
+          const stepIdx = orchestration.value.steps.findIndex(s => s.id === event.data.stepId);
+          if (stepIdx >= 0) {
+            orchestration.value.steps[stepIdx].result = event.data.summary;
+            if (event.data.wordCount) {
+              orchestration.value.steps[stepIdx].wordCount = event.data.wordCount;
+            }
+          }
+
+        } else if (event.type === 'step_done') {
+          const stepIdx = orchestration.value.steps.findIndex(s => s.id === event.data.stepId);
+          if (stepIdx >= 0) {
+            orchestration.value.steps[stepIdx].status = event.data.success ? 'done' : 'failed';
+          }
+          agentStatus.value = {
+            type: 'WRITER',
+            status: 'writing',
+            message: `步骤 ${event.data.stepIndex + 1} ${event.data.success ? '完成' : '失败'}`,
+          };
+          updateOrchestrationMessage(orchMsgId);
+
+        } else if (event.type === 'done') {
+          orchestration.value.phase = 'completed';
+          agentStatus.value = { type: 'WRITER', status: 'completed', message: event.data.summary };
+
+          // 最终更新消息
+          if (msgIdx >= 0) {
+            const stepSummary = orchestration.value.steps.map((s, i) => {
+              const icon = s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : '⏳';
+              const extra = s.wordCount ? ` (${s.wordCount}字)` : '';
+              return `${i + 1}. ${icon} **${s.title}**${extra}`;
+            }).join('\n');
+
+            const changes = event.data.updatedElements?.length
+              ? `\n\n📝 **变更记录：**\n${event.data.updatedElements.map((e: string) => `  - ${e}`).join('\n')}`
+              : '';
+
+            chatMessages.value[msgIdx] = {
+              ...chatMessages.value[msgIdx],
+              content: `✅ **多步编排完成**\n\n${stepSummary}${changes}\n\n${event.data.summary}`,
+              thinking: orchestration.value.planThinking || undefined,
+              isThinking: false,
+            };
+          }
+          // 标记编排完成（上下文刷新移至 parser 之后）
+          orchestration.value.phase = 'done';
+
+        } else if (event.type === 'error') {
+          throw new Error(event.data.message);
+        }
+      });
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parser.feed(decoder.decode(value, { stream: true }));
+      }
+      const decoderRest5 = decoder.decode();
+      if (decoderRest5) parser.feed(decoderRest5);
+      parser.flush();
+
+      // 编排完成后刷新上下文
+      if (orchestration.value.phase === 'done') {
+        await loadContext(bookId);
+      }
+
+    } catch (err: any) {
+      orchestration.value.phase = 'error';
+      error.value = err.message;
+      agentStatus.value = { type: 'WRITER', status: 'error', message: '编排执行失败' };
+
+      const msgIdx = chatMessages.value.findIndex(m => m.id === orchMsgId);
+      if (msgIdx >= 0) {
+        const completedSteps = orchestration.value.steps
+          .filter(s => s.status === 'done')
+          .map((s, i) => `  ✅ ${s.title}`)
+          .join('\n');
+        chatMessages.value[msgIdx] = {
+          ...chatMessages.value[msgIdx],
+          content: `❌ 编排执行出错: ${err.message}${completedSteps ? `\n\n已完成步骤:\n${completedSteps}` : ''}`,
+          isThinking: false,
+        };
+      }
+    } finally {
+      chatLoading.value = false;
+      // 如果处于等待用户确认状态，保持 active 不变
+      if (orchestration.value.phase !== 'awaiting_approval') {
+        orchestration.value.active = false;
+      }
+    }
+  }
+
+  /** 更新编排消息内容（反映最新步骤状态） */
+  function updateOrchestrationMessage(msgId: string) {
+    const msgIdx = chatMessages.value.findIndex(m => m.id === msgId);
+    if (msgIdx < 0) return;
+
+    const steps = orchestration.value.steps;
+    const stepList = steps.map((s, i) => {
+      const icon = s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : s.status === 'running' ? '🔄' : '⏳';
+      return `${i + 1}. ${icon} **${s.title}**`;
+    }).join('\n');
+
+    // 当前运行中的步骤——显示其思考内容
+    const runningStep = steps.find(s => s.status === 'running');
+    const thinkingPreview = runningStep?.thinking
+      ? `\n\n---\n💭 **${runningStep.title}** 思考中...\n\n${runningStep.thinking}`
+      : '';
+
+    chatMessages.value[msgIdx] = {
+      ...chatMessages.value[msgIdx],
+      content: `📋 **执行计划** (${steps.filter(s => s.status === 'done').length}/${steps.length} 完成)\n\n${stepList}${thinkingPreview}`,
+      thinking: orchestration.value.planThinking || undefined,
+    };
+  }
+
+  /** 取消多步编排 */
+  function cancelOrchestration() {
+    orchestration.value.active = false;
+    orchestration.value.phase = 'cancelled';
+    chatLoading.value = false;
+
+    // 更新消息
+    const msgIdx = chatMessages.value.findIndex(m => m.id === orchestration.value.msgId);
+    if (msgIdx >= 0) {
+      chatMessages.value[msgIdx] = {
+        ...chatMessages.value[msgIdx],
+        content: '❌ 编排计划已取消',
+        isThinking: false,
+      };
+    }
+  }
+
+  /** 确认并执行多步编排 */
+  async function confirmOrchestration() {
+    const orch = orchestration.value;
+    if (orch.phase !== 'awaiting_approval' || !orch.steps.length) return;
+
+    chatLoading.value = true;
+    orch.phase = 'executing';
+    agentStatus.value = { type: 'WRITER', status: 'thinking', message: '开始执行...' };
+
+    const orchMsgId = orch.msgId;
+
+    // 更新消息显示
+    const msgIdx = chatMessages.value.findIndex(m => m.id === orchMsgId);
+    if (msgIdx >= 0) {
+      const stepList = orch.steps.map((s, i) => `${i + 1}. ⏳ ${s.title}`).join('\n');
+      chatMessages.value[msgIdx] = {
+        ...chatMessages.value[msgIdx],
+        content: `📋 **正在执行** (${orch.steps.length} 步)\n\n${stepList}`,
+      };
+    }
+
+    const approvedSteps = orch.steps.map(s => ({
+      id: s.id, title: s.title, description: s.description, type: s.type,
+    }));
+
+    try {
+      const authToken = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/ai/orchestrate/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          bookId: orch.bookId,
+          message: orch.message,
+          ...(orch.chapterId && { chapterId: orch.chapterId }),
+          ...(orch.currentContent && { currentContent: orch.currentContent.slice(-15000) }),
+          ...(selectedModelId.value && { modelId: selectedModelId.value }),
+          approvedSteps,
+        }),
+      });
+
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+
+      const parser = createSSEParser((event) => {
+        const currentMsgIdx = chatMessages.value.findIndex(m => m.id === orchMsgId);
+
+        if (event.type === 'phase') {
+          orchestration.value.phase = event.data.phase;
+          agentStatus.value = { type: 'WRITER', status: 'thinking', message: event.data.message };
+
+        } else if (event.type === 'step_plan') {
+          orchestration.value.phase = 'executing';
+
+        } else if (event.type === 'step_start') {
+          const stepIdx = event.data.stepIndex;
+          orchestration.value.currentStepIndex = stepIdx;
+          if (orchestration.value.steps[stepIdx]) {
+            orchestration.value.steps[stepIdx].status = 'running';
+            orchestration.value.steps[stepIdx].thinking = '';
+          }
+          agentStatus.value = {
+            type: 'WRITER',
+            status: 'thinking',
+            message: `步骤 ${stepIdx + 1}/${orchestration.value.steps.length}: ${event.data.title}`,
+          };
+          updateOrchestrationMessage(orchMsgId);
+
+        } else if (event.type === 'step_thinking') {
+          const stepIdx = orchestration.value.steps.findIndex(s => s.id === event.data.stepId);
+          if (stepIdx >= 0) {
+            orchestration.value.steps[stepIdx].thinking =
+              (orchestration.value.steps[stepIdx].thinking || '') + event.data.text;
+            updateOrchestrationMessage(orchMsgId);
+          }
+
+        } else if (event.type === 'step_result') {
+          const stepIdx = orchestration.value.steps.findIndex(s => s.id === event.data.stepId);
+          if (stepIdx >= 0) {
+            orchestration.value.steps[stepIdx].result = event.data.summary;
+            if (event.data.wordCount) {
+              orchestration.value.steps[stepIdx].wordCount = event.data.wordCount;
+            }
+          }
+
+        } else if (event.type === 'step_done') {
+          const stepIdx = orchestration.value.steps.findIndex(s => s.id === event.data.stepId);
+          if (stepIdx >= 0) {
+            orchestration.value.steps[stepIdx].status = event.data.success ? 'done' : 'failed';
+          }
+          agentStatus.value = {
+            type: 'WRITER',
+            status: 'writing',
+            message: `步骤 ${event.data.stepIndex + 1} ${event.data.success ? '完成' : '失败'}`,
+          };
+          updateOrchestrationMessage(orchMsgId);
+
+        } else if (event.type === 'done') {
+          orchestration.value.phase = 'completed';
+          agentStatus.value = { type: 'WRITER', status: 'completed', message: event.data.summary };
+
+          if (currentMsgIdx >= 0) {
+            const stepSummary = orchestration.value.steps.map((s, i) => {
+              const icon = s.status === 'done' ? '✅' : s.status === 'failed' ? '❌' : '⏳';
+              const extra = s.wordCount ? ` (${s.wordCount}字)` : '';
+              return `${i + 1}. ${icon} **${s.title}**${extra}`;
+            }).join('\n');
+
+            const changes = event.data.updatedElements?.length
+              ? `\n\n📝 **变更记录：**\n${event.data.updatedElements.map((e: string) => `  - ${e}`).join('\n')}`
+              : '';
+
+            chatMessages.value[currentMsgIdx] = {
+              ...chatMessages.value[currentMsgIdx],
+              content: `✅ **多步编排完成**\n\n${stepSummary}${changes}\n\n${event.data.summary}`,
+              thinking: orchestration.value.planThinking || undefined,
+              isThinking: false,
+            };
+          }
+          orchestration.value.phase = 'done';
+
+        } else if (event.type === 'error') {
+          throw new Error(event.data.message);
+        }
+      });
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parser.feed(decoder.decode(value, { stream: true }));
+      }
+      const decoderRest6 = decoder.decode();
+      if (decoderRest6) parser.feed(decoderRest6);
+      parser.flush();
+
+      // 编排完成后刷新上下文
+      if (orchestration.value.phase === 'done') {
+        await loadContext(orch.bookId);
+      }
+
+    } catch (err: any) {
+      orchestration.value.phase = 'error';
+      error.value = err.message;
+      agentStatus.value = { type: 'WRITER', status: 'error', message: '编排执行失败' };
+
+      const errMsgIdx = chatMessages.value.findIndex(m => m.id === orchMsgId);
+      if (errMsgIdx >= 0) {
+        const completedSteps = orchestration.value.steps
+          .filter(s => s.status === 'done')
+          .map((s) => `  ✅ ${s.title}`)
+          .join('\n');
+        chatMessages.value[errMsgIdx] = {
+          ...chatMessages.value[errMsgIdx],
+          content: `❌ 编排执行出错: ${err.message}${completedSteps ? `\n\n已完成步骤:\n${completedSteps}` : ''}`,
+          isThinking: false,
+        };
+      }
+    } finally {
+      chatLoading.value = false;
+      orchestration.value.active = false;
     }
   }
 
@@ -1599,6 +2201,8 @@ export const useAgentStore = defineStore('agent', () => {
         if (done) break;
         parser.feed(decoder.decode(value, { stream: true }));
       }
+      const decoderRest7 = decoder.decode();
+      if (decoderRest7) parser.feed(decoderRest7);
       parser.flush();
 
       if (plan as CreativePlan | null) {
@@ -1749,6 +2353,8 @@ export const useAgentStore = defineStore('agent', () => {
         if (done) break;
         parser.feed(decoder.decode(value, { stream: true }));
       }
+      const decoderRest8 = decoder.decode();
+      if (decoderRest8) parser.feed(decoderRest8);
       parser.flush();
 
       // 最后一步标记完成
@@ -1841,6 +2447,7 @@ export const useAgentStore = defineStore('agent', () => {
     worldSettings,
     plotLines,
     foreshadowings,
+    outlines,
     characters,
     relationships,
     retrievalResults,
@@ -1902,6 +2509,10 @@ export const useAgentStore = defineStore('agent', () => {
     updateCharacterProfile,
     createCharacter,
     deleteCharacter,
+    createOutline,
+    updateOutline,
+    deleteOutline,
+    syncInternals,
     createRelationship,
     updateRelationship,
     deleteRelationship,
@@ -1916,6 +2527,11 @@ export const useAgentStore = defineStore('agent', () => {
     rejectPlan,
     clearChat,
     reset,
+    // Orchestration
+    orchestration,
+    startOrchestration,
+    confirmOrchestration,
+    cancelOrchestration,
     // Model selection
     availableModels,
     selectedModelId,

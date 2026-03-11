@@ -11,6 +11,7 @@
   <img src="https://img.shields.io/badge/Realtime-Socket.io-010101" alt="Socket.io" />
   <img src="https://img.shields.io/badge/AI-DeepSeek%20V3.2-FF6C37" alt="AI" />
   <img src="https://img.shields.io/badge/Desktop-Electron%2028-47848F" alt="Electron" />
+  <img src="https://img.shields.io/badge/Tests-107%20passed-4ade80" alt="Tests" />
   <img src="https://img.shields.io/badge/License-MIT-blue" alt="License" />
 </p>
 
@@ -18,7 +19,7 @@
   <img src="picture/主页.png" alt="AI+ 主页" width="80%" />
 </p>
 
-> 提供书籍-卷-章结构化管理、实时协作编辑、三层 AI 写作代理（战略-战术-执行）、角色关系网络、Copilot 风格行内润色与一致性检查。通过 **SiliconFlow** 平台调用 **DeepSeek-V3.2** 大语言模型，支持 Web 部署与 Electron 桌面应用打包，可完全私有化部署到本地。
+> 提供书籍-卷-章结构化管理、实时协作编辑、**三层 AI 写作代理**（战略-战术-执行）、角色关系网络、Copilot 风格行内润色、**多步编排任务系统**、**一键创意计划**（从零生成完整设定+章节）、**一致性检查引擎**与 **RAG 检索增强**。通过 **SiliconFlow** 平台调用 **DeepSeek-V3.2 / GLM-5 / MiniMax-M2.5** 大语言模型（支持动态切换），支持 Web 部署与 Electron 桌面应用打包，可完全私有化部署到本地。
 
 </div>
 
@@ -31,17 +32,16 @@
 - [核心功能](#核心功能)
 - [技术栈](#技术栈)
 - [系统架构](#系统架构)
-- [AI 模型与 API 调用详解](#ai-模型与-api-调用详解)
+- [AI 能力全景](#ai-能力全景)
 - [数据模型](#数据模型)
 - [本地部署指南](#本地部署指南)
 - [环境变量配置](#环境变量配置)
 - [常用命令](#常用命令)
-- [API 与模块说明](#api-与模块说明)
+- [API 接口总览](#api-接口总览)
 - [生产部署方案](#生产部署方案)
 - [Electron 桌面应用](#electron-桌面应用)
 - [工程化与安全](#工程化与安全)
 - [项目结构](#项目结构)
-- [更新日志 (2026-03-06)](#更新日志-2026-03-06)
 - [常见问题](#常见问题)
 
 ---
@@ -58,7 +58,7 @@
 
 ### 主页仪表板
 
-书籍管理主页，展示用户全部创作项目，支持新建书籍、卷、章节的全链路管理。
+书籍管理主页，展示用户全部创作项目与写作统计（总字数/今日字数/连续天数），支持新建书籍、卷、章节的全链路管理。首次访问自动触发新手引导。
 
 <p align="center">
   <img src="picture/主页.png" alt="主页仪表板" width="80%" />
@@ -66,7 +66,7 @@
 
 ### 写作编辑页
 
-基于 TipTap (ProseMirror) 的富文本编辑器，支持 Slash Command 菜单、Markdown 快捷键、实时协作与自动保存。
+基于 TipTap (ProseMirror) 的富文本编辑器，集成 Slash Command 菜单、Markdown 快捷键、右侧 8 大创作工具面板（校对/拼字/大纲/角色/世界观/灵感/润色）、实时协作与自动保存。
 
 <p align="center">
   <img src="picture/写作页.png" alt="写作编辑页" width="80%" />
@@ -74,7 +74,7 @@
 
 ### AI 助手面板
 
-右侧滑出式 AI 助手面板，支持基于文档上下文的智能问答、续写、改写和摘要生成，所有 AI 响应均通过 SSE 流式传输实时展示。
+右侧滑出式 AI 助手面板，支持基于文档上下文的智能问答、续写、改写和摘要生成。所有 AI 响应均通过 SSE 流式传输实时展示，支持**多模型动态切换**（DeepSeek V3.2 / GLM-5 / MiniMax M2.5）。
 
 <p align="center">
   <img src="picture/ai助手.png" alt="AI 助手面板" width="80%" />
@@ -116,6 +116,26 @@
   <img src="picture/实际使用场景_大纲结果.png" alt="大纲结果" width="80%" />
 </p>
 
+### 实际使用场景 — 小说多维度构建
+
+利用 AI 创意计划功能，一键生成包含世界观、角色群、剧情线、伏笔系统和章节大纲的完整创作框架。从自然语言描述到结构化小说蓝图，实现「零到一」的快速构建。
+
+<p align="center">
+  <img src="picture/实际使用场景_小说多维度构建.png" alt="小说多维度构建" width="80%" />
+</p>
+
+### 实际使用场景 — 根据已有章纲编写
+
+在已有结构化大纲（世界观 / 角色 / 剧情线 / 伏笔）的基础上，AI 根据章节大纲自动生成正文内容。系统自动加载全书设定作为上下文，确保生成内容与已有设定保持一致。
+
+<p align="center">
+  <img src="picture/实际使用场景_根据已有章纲编写.png" alt="根据已有章纲编写" width="80%" />
+</p>
+
+<p align="center">
+  <img src="picture/实际使用场景_根据已有章纲编写2.png" alt="根据已有章纲编写 - 生成结果" width="80%" />
+</p>
+
 ---
 
 ## 项目定位
@@ -123,9 +143,13 @@
 AI+ 面向 **可持续长篇写作生产** 而非一次性对话：
 
 - 以 **Book → Volume → Chapter → Document** 层级组织创作资产
-- 通过 **三层 AI 代理架构**（L3 大纲层 → L2 角色层 → L1 执行层）系统化辅助创作
+- 通过 **三层 AI 代理架构**（L3 战略层 → L2 战术层 → L1 执行层）系统化辅助创作
+- 以 **创意计划** 支持从自然语言描述一键生成完整小说蓝图并批量执行
+- 以 **多步编排系统** 将复杂创作拆解为可审批的子任务流
 - 用 **Socket.io 协作网关** 支持多人实时编辑
-- 用 **一致性检查 + RAG 检索增强** 保障内容逻辑与质量
+- 用 **一致性检查引擎 + RAG 检索增强** 保障长篇内容的逻辑连贯与质量
+- 用 **全文分析引擎** 从伏笔、角色弧线、叙事节奏、综合质量四个维度诊断作品
+- 提供 **新手引导系统**，降低使用门槛
 
 适合个人创作者、小型内容团队的私有化部署。
 
@@ -134,9 +158,9 @@ AI+ 面向 **可持续长篇写作生产** 而非一次性对话：
 ## 核心功能
 
 ### 结构化写作管理
-- 书籍 / 卷 / 章节 全链路 CRUD
-- 章节版本快照与回滚
-- 字数统计与写作日历
+- 书籍 / 卷 / 章节全链路 CRUD，章节版本快照与回滚
+- 字数统计仪表盘与写作日历（今日字数/连续天数/活跃天数/周月趋势图）
+- 灵感卡片收集与管理
 
 ### AI 辅助创作
 
@@ -144,12 +168,31 @@ AI+ 面向 **可持续长篇写作生产** 而非一次性对话：
   <img src="picture/ai助手.png" alt="AI 辅助创作" width="60%" />
 </p>
 
-- **续写 / 改写 / 摘要**：基于上下文的 SSE 流式生成
+- **续写 / 改写 / 摘要**：基于上下文的 SSE 流式生成，支持 1-5 个多候选并行生成（温度递增提升多样性）
+- **FIM 光标续写**：支持 Fill-in-the-Middle 模式，在文中任意位置插入光标即可触发上下文感知续写
 - **Copilot 行内润色**：选中文本后获取红绿 Diff 对比建议，逐条接受/拒绝
-- **角色/大纲/世界观 AI 补全**：字段级智能建议，一键采纳
-- **关系网络 AI 建议**：自动分析角色并推荐缺失关系
+- **深度思考对话**：两阶段推理（快速模型分析 → 主模型生成），含推理过程透明展示
+- **创意计划**：自然语言描述 → AI 一键生成完整创作方案（世界观 + 角色群 + 剧情线 + 伏笔 + 章节大纲 + 前 N 章正文），支持流式生成与批量执行
+- **全文分析**：四大分析维度（伏笔分析 / 角色弧线 / 节奏分析 / 全面诊断），返回结构化建议并按优先级排序
+- **多步编排系统**：复杂任务自动拆解 → 逐步思考 → 用户审批 → 批量执行
+- **大纲变更影响分析**：角色 / 世界观 / 剧情线 / 伏笔变更时，自动分析受影响章节并标注严重级别（HIGH / MEDIUM / LOW）
+- **多模型动态切换**：DeepSeek V3.2 / GLM-5 / MiniMax M2.5，面板顶部一键切换
 
-### 全屏编辑器
+### 右侧 8 大创作工具
+
+| 工具 | 说明 |
+|------|------|
+| 校对助手 | 语法、逻辑、上下文一致性全面检查 |
+| 拼字检查 | 错别字、同音字智能纠错 |
+| 大纲生成 | 章节结构化大纲 AI 生成 |
+| 角色管理 | 角色档案 + 关系图谱 + AI 补全 |
+| 世界观设定 | 题材/基调/力量体系/地理/社会/历史 |
+| 灵感生成 | 基于上下文的创意激发 |
+| 妙笔润色 | 修辞与风格优化建议 |
+| 字段级补全 | 角色/世界观/大纲任意字段 AI 建议，一键采纳 |
+| 全文分析 | 伏笔/角色弧线/节奏/综合四维度深度诊断 |
+
+### 全屏编辑器系列
 
 <p align="center">
   <img src="picture/写作页.png" alt="全屏编辑器" width="60%" />
@@ -158,23 +201,32 @@ AI+ 面向 **可持续长篇写作生产** 而非一次性对话：
 - **角色编辑器**：基本信息 / 性格心理 / 能力成长 / 背景故事 四维管理
 - **世界观编辑器**：流派 / 基调 / 力量体系 / 地理 / 社会 / 历史 / 规则
 - **剧情线编辑器**：主线 / 副线 / 角色线，含冲突-高潮-结局结构
-- **伏笔编辑器**：创建 / 回收 / 废弃状态管理
+- **伏笔编辑器**：创建 / 回收 / 废弃状态管理，AI 伏笔回收建议
 
 ### 角色关系网络
-- SVG 力导向图（零依赖）
-- 节点按角色着色（主角/配角/反派）
-- 边按关系状态着色（正面/负面/复杂）
-- 双向贝塞尔曲线、拖拽交互、双击打开角色编辑
+- SVG 力导向图（零依赖），节点按角色着色（主角/配角/反派）
+- 边按关系状态着色（正面/负面/复杂），双向贝塞尔曲线
+- 拖拽交互、双击打开角色编辑
+- **AI 关系建议**：自动分析角色并推荐 3-6 条有故事潜力的缺失关系，说明每段关系对剧情的推动作用
+
+### 一致性检查引擎
+- 自定义检查规则（时间线/角色能力/性格/世界观规则/伏笔）
+- 章节级 / 全书扫描，生成结构化报告（评分 + 问题列表 + 修改建议）
+- 规则启用/禁用切换，历史报告查阅
+
+### RAG 检索增强
+- 基于 `BAAI/bge-large-zh-v1.5` 的向量嵌入
+- 全书内容索引（章节/角色/世界观/剧情线/伏笔/场景）
+- 语义检索辅助 AI 上下文构建，伏笔回收建议
 
 ### 实时协作
 - WebSocket 房间机制 + 内容增量同步
 - 在线协作者感知
 
-### 安全与运维
-- JWT 鉴权 + 用户维度资源隔离
-- 全局限流 + AI 专用限流
-- Helmet 安全头 + 压缩中间件
-- 统一环境变量启动校验
+### 新手引导系统
+- 首页 4 步引导 + 编辑器 9 步引导
+- SVG mask 遮罩高亮 + 品牌色光圈 + 弹性动画
+- 仅首次访问触发，localStorage 持久化完成标记
 
 ---
 
@@ -185,44 +237,46 @@ AI+ 面向 **可持续长篇写作生产** 而非一次性对话：
 | 类别 | 技术 | 版本 | 说明 |
 |------|------|------|------|
 | 框架 | Vue 3 | 3.5+ | Composition API + `<script setup>` |
-| 状态管理 | Pinia | 2.1 | 响应式 Store |
+| 状态管理 | Pinia | 2.1 | 响应式 Store（5 个核心 Store） |
 | 编辑器 | TipTap | 2.2 | 基于 ProseMirror 的富文本编辑器 |
 | 样式 | Tailwind CSS | 3.4 | 自定义设计令牌 |
 | 构建工具 | Vite | 5.0 | HMR + 开发代理 |
 | 类型检查 | TypeScript | 5.3 | Strict 模式 |
-| HTTP | Axios | 1.6 | API 请求 |
+| HTTP | Axios | 1.6 | API 请求（自动附加 JWT） |
 | 实时通信 | Socket.io-client | 4.7 | WebSocket 协作 |
 | 桌面 | Electron | 28 | 可选桌面应用打包 |
-| 路由 | Vue Router | 4.2 | SPA 路由 |
+| 路由 | Vue Router | 4.2 | SPA 路由（懒加载） |
 
 ### 后端
 
 | 类别 | 技术 | 版本 | 说明 |
 |------|------|------|------|
-| 框架 | NestJS | 10.3 | 模块化企业级框架 |
+| 框架 | NestJS | 10.3 | 模块化企业级框架（19 个业务模块） |
 | ORM | Prisma | 5.9 | 类型安全数据库访问 |
 | 数据库 | SQLite | — | 默认轻量数据库（可迁移 PostgreSQL） |
 | 实时通信 | Socket.io | 4.7 | WebSocket 网关 |
 | 认证 | Passport + JWT | — | 无状态令牌鉴权 |
 | 校验 | class-validator | 0.14 | DTO 输入校验 |
-| AI 调用 | Axios | 1.6 | SiliconFlow API 请求 |
+| AI 调用 | Axios + HTTP Agent | 1.6 | SiliconFlow API（连接池 + 指数退避重试） |
 | 安全 | Helmet | 8.1 | HTTP 安全头 |
 | 压缩 | compression | 1.8 | Gzip 响应压缩 |
-| 限流 | @nestjs/throttler | 6.5 | 全局 + AI 专用限流 |
-| 缓存 | cache-manager + Redis | — | 可选 Redis 缓存层 |
+| 限流 | @nestjs/throttler | 6.5 | 全局 60次/分 + AI 15次/分 |
+| 缓存 | cache-manager + Redis | — | 可选 Redis 缓存层 + 上下文内存缓存 |
 | 文档 | @nestjs/swagger | 11.2 | 自动生成 API 文档 |
-| 测试 | Jest | 29.7 | 单元测试 |
+| 测试 | Jest | 29.7 | 8 个套件 / 107 个测试 |
 
 ### AI 模型
 
-| 提供商 | 模型 | 用途 | API 端点 |
-|--------|------|------|----------|
-| SiliconFlow | DeepSeek-V3.2 | 对话/续写/润色/补全（默认） | `https://api.siliconflow.cn/v1/chat/completions` |
-| SiliconFlow | GLM-5 | 用户可选切换的高质量模型 | `https://api.siliconflow.cn/v1/chat/completions` |
-| SiliconFlow | MiniMax-M2.5 | 用户可选切换的快速模型 | `https://api.siliconflow.cn/v1/chat/completions` |
-| SiliconFlow | BAAI/bge-large-zh-v1.5 | RAG 向量嵌入检索 | `https://api.siliconflow.cn/v1/embeddings` |
+| 提供商 | 模型 | 用途 | 速度 |
+|--------|------|------|------|
+| SiliconFlow | DeepSeek-V3.2 | 对话/续写/润色/补全（默认旗舰） | 标准 |
+| SiliconFlow | GLM-5 | 用户可选的智谱高质量模型 | 标准 |
+| SiliconFlow | MiniMax-M2.5 | 用户可选的快速响应模型 | 快速 |
+| SiliconFlow | Qwen2.5-7B-Instruct | 轻量任务自动路由（一致性检查/思考阶段） | 极快 |
+| SiliconFlow | BAAI/bge-large-zh-v1.5 | RAG 向量嵌入检索 | — |
 
-支持 **SSE 流式输出**（续写/润色/对话）与 **常规 JSON 响应**（角色/大纲/关系建议）。
+支持 **SSE 流式输出**（续写/润色/对话/编排）与 **常规 JSON 响应**（角色/大纲/关系建议）。
+前端支持**动态切换模型**（localStorage 持久化），非白名单模型 ID 自动回退默认模型。
 
 ---
 
@@ -231,130 +285,74 @@ AI+ 面向 **可持续长篇写作生产** 而非一次性对话：
 ```
 ┌─────────────┐     HTTP/WS      ┌──────────────┐     Prisma     ┌──────────┐
 │  Vue 3 SPA  │ ◄──────────────► │  NestJS API  │ ◄────────────► │  SQLite  │
-│  (or Electron)                 │              │                │(可替换PG)│
-└─────────────┘                  │  ┌─────────┐ │                └──────────┘
-       │                         │  │ Socket  │ │
-       │    /socket.io           │  │ Gateway │ │     REST       ┌──────────┐
-       └─────────────────────────┤  └─────────┘ │ ◄────────────► │SiliconFlow│
-                                 │              │                │ DeepSeek │
-                                 │  ┌─────────┐ │                └──────────┘
-                                 │  │  Agent  │ │
-                                 │  │Orchestr.│ │     Optional   ┌──────────┐
-                                 │  └─────────┘ │ ◄────────────► │  Redis   │
-                                 └──────────────┘                └──────────┘
+│  (or Electron)                 │  19 个模块    │                │(可替换PG)│
+└─────────────┘                  │              │                └──────────┘
+       │                         │  ┌─────────┐ │
+       │    /socket.io           │  │ Socket  │ │     REST       ┌──────────┐
+       └─────────────────────────┤  │ Gateway │ │ ◄────────────► │SiliconFlow│
+                                 │  └─────────┘ │                │ LLM API  │
+                                 │              │                └──────────┘
+                                 │  ┌─────────┐ │
+                                 │  │  Agent  │ │     Embedding  ┌──────────┐
+                                 │  │Orchestr.│ │ ◄────────────► │ BGE-zh   │
+                                 │  └─────────┘ │                │ 向量模型  │
+                                 │              │                └──────────┘
+                                 │  ┌─────────┐ │
+                                 │  │  RAG +  │ │     Optional   ┌──────────┐
+                                 │  │Consist. │ │ ◄────────────► │  Redis   │
+                                 │  └─────────┘ │                └──────────┘
+                                 └──────────────┘
 ```
 
 ### 三层 AI 代理架构
 
 | 层级 | 名称 | 职责 | 数据模型 |
 |------|------|------|----------|
-| L3 | 战略层 | 世界观、剧情线、时间线、伏笔 | WorldSetting, PlotLine, TimelineEvent, Foreshadowing |
+| L3 | 战略层 | 世界观、剧情线、时间线、伏笔、大纲规划 | WorldSetting, PlotLine, TimelineEvent, Foreshadowing, Outline |
 | L2 | 战术层 | 角色档案、关系网络、情绪轨迹、成长记录 | CharacterProfile, CharacterRelationship, EmotionLog, GrowthRecord |
-| L1 | 执行层 | 场景、事件日志、章节摘要、AI 会话 | Scene, EventLog, ChapterSummary, AgentSession |
+| L1 | 执行层 | 场景管理、事件日志、章节摘要、AI 会话 | Scene, EventLog, ChapterSummary, AgentSession |
 
 ### 关键流程
 
-1. 用户登录获取 JWT
+1. 用户登录获取 JWT → 前端自动附加 Bearer Token
 2. 前端调用 REST API 管理书籍与章节
 3. 进入编辑器后连接 Socket 命名空间并加入文档房间
-4. 用户触发 AI 操作，后端拼接上下文并调用 SiliconFlow 模型
-5. 结果回写文档，并向协作者广播更新
+4. 用户触发 AI 操作，后端从上下文缓存（30s TTL）加载数据并拼接 Prompt
+5. 通过连接池调用 SiliconFlow 模型，失败自动指数退避重试（最多 3 次）
+6. 流式结果实时推送前端，非流式结果回写文档并向协作者广播
 
 ---
 
-## AI 模型与 API 调用详解
+## AI 能力全景
 
 本项目通过 **SiliconFlow** 云平台统一调用 AI 大语言模型，所有 AI 请求均在后端发起，前端不直接接触 API 密钥，确保安全性。
 
-### API 提供商与模型
+### 获取 API Key
 
-| 提供商 | 平台地址 | 模型标识 | 用途 |
-|--------|----------|----------|------|
-| [SiliconFlow](https://siliconflow.cn) | `https://api.siliconflow.cn` | `deepseek-ai/DeepSeek-V3.2` | 对话、续写、润色、角色补全、大纲规划 |
-| [SiliconFlow](https://siliconflow.cn) | `https://api.siliconflow.cn` | `BAAI/bge-large-zh-v1.5` | RAG 向量嵌入与语义检索 |
+访问 [SiliconFlow 控制台](https://cloud.siliconflow.cn) 注册账号 → 创建 API Key → 填入后端环境变量 `SILICONFLOW_API_KEY`。新用户有免费额度，可直接用于开发测试。
 
-> **如何获取 API Key**：访问 [SiliconFlow 控制台](https://cloud.siliconflow.cn) 注册账号 → 创建 API Key → 填入后端环境变量 `SILICONFLOW_API_KEY`。
+### 后端 AI 服务矩阵
 
-### 后端 AI 调用架构
+| 服务 | 文件 | 职责 | 调用方式 |
+|------|------|------|----------|
+| **AI 通用服务** | `ai/ai.service.ts` | 文档问答、写作辅助 | HTTP POST（非流式） |
+| **编排器** | `agent/orchestrator.service.ts` | 续写、多候选生成、行内润色、多步编排、模型切换 | SSE 流式 |
+| **RAG 服务** | `rag/rag.service.ts` | 向量嵌入、语义检索、全书索引 | Embedding API |
+| **一致性检查** | `consistency/consistency.service.ts` | 逻辑矛盾检测、规则引擎、报告生成 | HTTP POST |
+| **规划服务** | `planner/planner.service.ts` | 大纲更新影响分析 | HTTP POST |
+| **角色服务** | `character/character.service.ts` | 角色档案管理、AI 关系建议、冲突检测 | HTTP POST |
+| **场景服务** | `scene/scene.service.ts` | 场景 CRUD、自动分割 | HTTP POST |
 
-项目中有 **4 个核心服务** 直接调用 SiliconFlow API：
+### 性能优化措施
 
-#### 1. `backend/src/ai/ai.service.ts` — AI 通用服务
-
-负责文档问答、写作辅助等 **非流式** 请求：
-
-```typescript
-// 调用方式：标准 HTTP POST 请求
-const response = await axios.post(
-  'https://api.siliconflow.cn/v1/chat/completions',
-  {
-    model: 'deepseek-ai/DeepSeek-V3.2',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userPrompt }
-    ],
-    temperature: 0.7,
-    max_tokens: 2000
-  },
-  {
-    timeout: 30000,  // 可通过 SILICONFLOW_TIMEOUT_MS 配置
-    headers: {
-      Authorization: `Bearer ${SILICONFLOW_API_KEY}`,
-      'Content-Type': 'application/json'
-    }
-  }
-);
-return response.data.choices[0].message.content;
-```
-
-#### 2. `backend/src/agent/orchestrator.service.ts` — 核心编排器
-
-三层 AI 代理的核心，负责 **续写、多候选生成、行内润色** 等 **流式 (SSE)** 请求：
-
-```typescript
-// 流式调用：通过 stream: true 开启 SSE
-const response = await axios.post(url, {
-  model: 'deepseek-ai/DeepSeek-V3.2',
-  messages: [...],
-  stream: true       // 关键：启用流式传输
-}, {
-  responseType: 'stream'  // Axios 以流方式接收
-});
-
-// 解析 SSE 数据
-response.data.on('data', (buf: Buffer) => {
-  const lines = buf.toString().split('\n')
-    .filter(l => l.trim().startsWith('data:'));
-  for (const line of lines) {
-    const json = line.replace(/^data:\s*/, '').trim();
-    if (json === '[DONE]') break;
-    const parsed = JSON.parse(json);
-    const token = parsed.choices[0].delta.content;
-    onChunk(token);  // 实时将 token 推送给前端
-  }
-});
-```
-
-#### 3. `backend/src/rag/rag.service.ts` — RAG 检索增强
-
-调用 **Embedding API** 将文本向量化，支持语义检索：
-
-```typescript
-// 向量嵌入调用
-const response = await axios.post(
-  'https://api.siliconflow.cn/v1/embeddings',
-  {
-    model: 'BAAI/bge-large-zh-v1.5',
-    input: text
-  },
-  { headers: { Authorization: `Bearer ${API_KEY}` } }
-);
-return response.data.data[0].embedding;  // 返回向量数组
-```
-
-#### 4. `backend/src/consistency/consistency.service.ts` — 一致性检查
-
-利用 AI 分析文本中的逻辑矛盾、角色行为偏差等问题，返回结构化检查报告。
+| 优化项 | 说明 |
+|--------|------|
+| **HTTP 连接池** | Keep-Alive 复用 TCP/TLS 连接，最大 20 并发 socket |
+| **上下文内存缓存** | 同一 bookId+chapterId 在 TTL（默认 30s）内复用，减少 4-5 次 DB 查询 |
+| **并行候选生成** | 多候选续写 `Promise.allSettled` 并发调用，1-5 个候选温度递增 |
+| **指数退避重试** | 429/5xx/超时自动重试（最多 3 次） |
+| **快速模型路由** | 一致性检查、深度思考分析阶段自动使用轻量模型 |
+| **双通道 AI 调用** | SiliconFlow 统一网关 + MiniMax 付费直连，按模型类型自动路由 |
 
 ### 前端 AI 交互流程
 
@@ -366,39 +364,26 @@ return response.data.data[0].embedding;  // 返回向量数组
     │  发起 HTTP 请求到后端 /ai/* 端点
     ▼
 Axios 封装层 (lib/api.ts)
-    │  自动附加 JWT Bearer Token
+    │  自动附加 JWT Bearer Token + modelId
     ▼
-后端 NestJS Controller (agent.controller.ts / ai.controller.ts)
+后端 NestJS Controller
     │
     ▼
-Service 层拼接 Prompt + 上下文
+Service 层加载上下文缓存 + 拼接 Prompt
     │
     ▼
-调用 SiliconFlow API (DeepSeek-V3.2)
+调用 SiliconFlow API（连接池 + 重试）
     │
     ▼  流式: SSE → EventSource 实时推送
     ▼  非流式: JSON → 标准 HTTP 响应
-前端展示结果 (AI 面板 / Diff 对比 / 编辑器内嵌)
+前端展示结果 (AI 面板 / Diff 对比 / 编排面板 / 编辑器内嵌)
 ```
-
-### 流式端点一览
-
-| 端点 | 方法 | 说明 | 流式 |
-|------|------|------|------|
-| `/ai/chat` | POST | AI 对话 (基于文档上下文) | ✅ SSE |
-| `/ai/deep-think-chat` | POST | 深度思考对话 (含推理过程) | ✅ SSE |
-| `/ai/inline-polish` | POST | Copilot 行内润色建议 | ✅ SSE |
-| `/ai/generate/continue` | POST | 多候选续写生成 | ✅ SSE |
-| `/ai/ask` | POST | 文档问答 | ❌ JSON |
-| `/ai/suggest` | POST | 写作建议 | ❌ JSON |
-| `/ai/assist-content` | POST | 字段级 AI 补全 | ❌ JSON |
-| `/ai/suggest-relationships` | POST | 角色关系 AI 建议 | ❌ JSON |
 
 ---
 
 ## 数据模型
 
-项目使用 Prisma + SQLite，共 **31 个数据模型**：
+项目使用 Prisma + SQLite，共 **34 个数据模型**：
 
 ```
 用户与团队       文档协作             书籍结构              AI 三层架构
@@ -407,11 +392,12 @@ User           Document             Book                 L3: WorldSetting
 Team           DocumentVersion      Volume                   PlotLine
 TeamMember     Folder               Chapter                  TimelineEvent
 TeamInvite     Tag / DocumentTag    ChapterVersion           Foreshadowing
-               Share                Outline              L2: CharacterProfile
-               Favorite             Character                CharacterRelationship
-               Comment              Inspiration              EmotionLog
-               Notification         WritingStat              GrowthRecord
-               AuditLog                                  L1: Scene
+               Share                Outline                  Outline
+               Favorite             Character            L2: CharacterProfile
+               Comment              Inspiration              CharacterRelationship
+               Notification         WritingStat              EmotionLog
+               AuditLog                                      GrowthRecord
+                                                         L1: Scene
                                                              EventLog
                                                              ChapterSummary
                                                              AgentSession
@@ -424,8 +410,6 @@ TeamInvite     Tag / DocumentTag    ChapterVersion           Foreshadowing
 ---
 
 ## 本地部署指南
-
-本节详细说明如何将 AI+ 完整部署到本地开发机/服务器上运行。
 
 ### 环境要求
 
@@ -467,16 +451,7 @@ npm install
 
 ### 第四步：配置环境变量
 
-```bash
-# 后端环境变量
-cd backend
-# Windows PowerShell:
-Copy-Item .env.example .env
-# Linux/macOS:
-# cp .env.example .env
-```
-
-编辑 `backend/.env`，**至少配置以下两项**：
+在 `backend/` 目录下创建 `.env` 文件，**至少配置以下两项**：
 
 ```env
 # ========== 必填 ==========
@@ -490,17 +465,12 @@ CORS_ORIGIN=http://localhost:5173
 DATABASE_URL=file:./dev.db
 SILICONFLOW_API_URL=https://api.siliconflow.cn/v1/chat/completions
 SILICONFLOW_MODEL=deepseek-ai/DeepSeek-V3.2
+SILICONFLOW_FAST_MODEL=Qwen/Qwen2.5-7B-Instruct
 SILICONFLOW_TIMEOUT_MS=30000
+CONTEXT_CACHE_TTL_MS=30000
 ```
 
-前端通常无需修改环境变量，本地开发会自动通过 Vite 代理转发到后端：
-
-```bash
-cd ../frontend
-# Windows PowerShell:
-Copy-Item .env.example .env
-# 本地开发保持 VITE_API_URL 为空即可
-```
+前端通常无需修改环境变量，本地开发会自动通过 Vite 代理转发到后端。
 
 ### 第五步：初始化数据库
 
@@ -510,7 +480,7 @@ cd backend
 # 生成 Prisma Client（类型安全的数据库访问层）
 npm run prisma:generate
 
-# 执行数据库迁移（自动创建 SQLite 数据库文件和全部 31 张表）
+# 执行数据库迁移（自动创建 SQLite 数据库文件和全部数据表）
 npm run prisma:migrate
 ```
 
@@ -543,7 +513,7 @@ npm run dev
   <img src="picture/登录页.png" alt="登录页" width="60%" />
 </p>
 
-打开浏览器访问 http://localhost:5173，注册账号即可开始使用。
+打开浏览器访问 http://localhost:5173，注册账号即可开始使用。首次登录会自动触发新手引导。
 
 ### 本地部署验证清单
 
@@ -553,6 +523,7 @@ npm run dev
 - [ ] 能创建书籍和章节
 - [ ] AI 助手能正常对话（验证 API Key 有效）
 - [ ] 编辑器实时保存正常工作
+- [ ] 模型切换功能正常（AI 面板顶部切换）
 
 ---
 
@@ -570,8 +541,10 @@ npm run dev
 | `DATABASE_URL` | 否 | `file:./dev.db` | 数据库连接字符串 |
 | `REDIS_URL` | 否 | — | Redis 连接（可选缓存层） |
 | `SILICONFLOW_API_URL` | 否 | `https://api.siliconflow.cn/v1/chat/completions` | AI API 地址 |
-| `SILICONFLOW_MODEL` | 否 | `deepseek-ai/DeepSeek-V3.2` | AI 模型标识 |
+| `SILICONFLOW_MODEL` | 否 | `deepseek-ai/DeepSeek-V3.2` | 默认 AI 模型标识 |
+| `SILICONFLOW_FAST_MODEL` | 否 | `Qwen/Qwen2.5-7B-Instruct` | 轻量任务快速模型 |
 | `SILICONFLOW_TIMEOUT_MS` | 否 | `30000` | AI 调用超时（毫秒） |
+| `CONTEXT_CACHE_TTL_MS` | 否 | `30000` | 上下文缓存 TTL（毫秒） |
 | `THROTTLE_TTL` | 否 | `60000` | 限流时间窗口（毫秒） |
 | `THROTTLE_LIMIT` | 否 | `60` | 全局每窗口最大请求数 |
 | `AI_THROTTLE_LIMIT` | 否 | `15` | AI 接口每窗口最大请求数 |
@@ -595,7 +568,7 @@ npm run dev
 npm run start:dev       # 开发模式（自动重载）
 npm run build           # 构建到 dist/
 npm run start:prod      # 生产运行 (node dist/main)
-npm run test            # 单元测试
+npm run test            # 单元测试（8 套件 / 107 测试）
 npm run test:cov        # 测试覆盖率
 npm run prisma:generate # 生成 Prisma Client
 npm run prisma:migrate  # 开发环境数据库迁移
@@ -616,12 +589,12 @@ npm run electron:build  # 打包 Electron 安装包（Windows NSIS）
 
 ---
 
-## API 与模块说明
+## API 接口总览
 
-### 后端核心模块
+### 后端核心模块（19 个）
 
-| 模块 | 路径 | 职责 |
-|------|------|------|
+| 模块 | 路由前缀 | 职责 |
+|------|----------|------|
 | `auth/` | `/auth` | 用户注册、登录、JWT 签发与守卫 |
 | `users/` | `/users` | 用户信息管理 |
 | `book/` | `/books` | 书籍 CRUD |
@@ -630,44 +603,66 @@ npm run electron:build  # 打包 Electron 安装包（Windows NSIS）
 | `document/` | `/documents` | 文档内容管理 |
 | `gateway/` | Socket.io | 协作编辑 WebSocket 网关 |
 | `ai/` | `/ai` | AI 通用对话与辅助 |
-| `agent/` | `/ai` | 写作智能体编排（三层架构核心） |
+| `agent/` | `/ai` | 写作智能体编排（三层架构核心，40+ 端点） |
 | `assistant/` | `/assistant` | 对话助手 |
-| `consistency/` | — | 一致性检查服务 |
-| `rag/` | — | 检索增强（embedding / 向量化） |
-| `planner/` | — | 大纲规划服务 |
-| `stats/` | `/stats` | 统计与写作日历 |
-| `upload/` | `/upload` | 文件上传 |
+| `consistency/` | `/ai/consistency` | 一致性检查（规则/扫描/报告） |
+| `rag/` | `/ai/rag`, `/ai/retrieve` | 检索增强（向量化/语义检索） |
+| `planner/` | `/ai/planner` | 大纲规划与影响分析 |
+| `character/` | — | 角色档案/关系/情绪/成长服务 |
+| `scene/` | `/ai/scenes` | 场景管理与自动分割 |
+| `stats/` | `/stats` | 写作统计与日历 |
+| `upload/` | `/upload` | 文件上传（5MB 限制） |
+| `common/` | — | 异常过滤器、日志拦截器、Redis 缓存 |
+| `config/` | — | 环境变量启动校验 |
 
-### AI 核心接口
+### AI 流式接口
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/ai/chat/stream` | POST | SSE 流式对话（基于文档上下文） |
+| `/ai/deep-think/stream` | POST | 深度思考流式对话（含推理过程） |
+| `/ai/polish/inline` | POST | Copilot 行内润色建议（SSE） |
+| `/ai/generate/continue` | POST | 多候选续写生成（SSE） |
+| `/ai/orchestrate/stream` | POST | 多步编排流式执行 |
+| `/ai/tool-analysis/stream` | POST | 校对/拼字/灵感/润色工具分析（SSE） |
+| `/ai/analyze/stream` | POST | 全文分析（伏笔/角色弧线/节奏/综合）（SSE） |
+| `/ai/creative-plan/stream` | POST | 流式创意计划生成 |
+| `/ai/creative-plan/stream-execute` | POST | 流式创意计划执行 |
+
+### AI 非流式接口
+
+| 端点 | 方法 | 说明 |
+|------|------|------|
+| `/ai/ask` | POST | 文档问答 |
+| `/ai/suggest` | POST | 写作建议 |
+| `/ai/assist-content` | POST | 字段级 AI 补全（支持 key 归一化） |
+| `/ai/suggest-relationships` | POST | 角色关系 AI 建议（3-6 条推荐） |
+| `/ai/creative-plan` | POST | 创意计划生成（结构化 JSON） |
+| `/ai/creative-plan/execute` | POST | 批量执行创意计划（逐步创建资源） |
+| `/ai/planner/impact` | POST | 大纲变更影响分析 |
+| `/ai/models` | GET | 可用模型列表 |
+
+### 三层架构 CRUD（L3 战略 / L2 战术 / L1 执行）
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/ai/ask` | 基于文档上下文问答 |
-| `POST` | `/ai/suggest` | 基于命令给出写作建议（SSE 流） |
-| `POST` | `/ai/polish/inline` | Copilot 行内润色（SSE 流） |
-| `POST` | `/ai/assist-content` | 字段级 AI 补全（角色/世界观/大纲） |
-| `POST` | `/ai/suggest-relationships` | AI 角色关系建议 |
-
-### 世界观/剧情线/伏笔/角色 CRUD
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/ai/world-settings` | 创建世界观设定 |
-| `PUT` | `/ai/world-settings/:id` | 更新世界观设定 |
-| `DELETE` | `/ai/world-settings/:id` | 删除世界观设定 |
-| `POST` | `/ai/plot-lines` | 创建剧情线 |
-| `PUT` | `/ai/plot-lines/:id` | 更新剧情线 |
-| `DELETE` | `/ai/plot-lines/:id` | 删除剧情线 |
-| `POST` | `/ai/foreshadowings` | 创建伏笔 |
-| `PUT` | `/ai/foreshadowings/:id` | 更新伏笔 |
-| `PUT` | `/ai/foreshadowings/:id/resolve` | 回收伏笔 |
-| `PUT` | `/ai/foreshadowings/:id/abandon` | 废弃伏笔 |
-| `DELETE` | `/ai/foreshadowings/:id` | 删除伏笔 |
-| `POST` | `/ai/characters` | 创建角色 |
-| `DELETE` | `/ai/characters/:id` | 删除角色 |
-| `POST` | `/ai/relationships` | 创建角色关系 |
-| `PUT` | `/ai/relationships/:id` | 更新角色关系 |
-| `DELETE` | `/ai/relationships/:id` | 删除角色关系 |
+| GET/POST/PUT/DELETE | `/ai/world-settings` | 世界观设定 |
+| GET/POST/PUT/DELETE | `/ai/plot-lines` | 剧情线 |
+| GET/POST/DELETE | `/ai/timeline-events` | 时间线事件 |
+| GET/POST/PUT/DELETE | `/ai/foreshadowings` | 伏笔管理（含回收/废弃） |
+| GET/POST/PUT/DELETE | `/ai/outlines` | 章节大纲 |
+| GET/POST | `/ai/character-profile` | 角色档案（Upsert） |
+| GET/POST/PUT/DELETE | `/ai/relationships` | 角色关系 |
+| GET/POST | `/ai/emotions` | 情绪日志 |
+| GET/POST | `/ai/growth` | 成长记录 |
+| GET/POST/PUT/DELETE | `/ai/scenes` | 场景管理 |
+| POST | `/ai/scenes/auto-split` | 自动分割场景 |
+| GET/POST/PUT/DELETE | `/ai/consistency/rules` | 一致性规则 |
+| POST | `/ai/consistency/check` | 章节一致性检查 |
+| POST | `/ai/consistency/scan/:bookId` | 全书扫描 |
+| GET | `/ai/consistency/reports/:bookId` | 检查报告 |
+| POST | `/ai/rag/index/:bookId` | 全书 RAG 索引 |
+| GET | `/ai/retrieve/:bookId` | 语义检索 |
 
 > 完整接口文档在开发环境可通过 Swagger 查看：**http://localhost:3001/api/docs**
 
@@ -1000,19 +995,6 @@ VITE_API_URL=https://your-api-domain.com
 VITE_SOCKET_URL=https://your-api-domain.com
 ```
 
-打包参数在 `frontend/package.json` → `build` 字段中配置：
-
-```json
-{
-  "build": {
-    "appId": "com.aiplus.writer",
-    "productName": "AI+作家助手",
-    "win": { "target": "nsis", "icon": "public/icon.ico" },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true }
-  }
-}
-```
-
 > 桌面应用**不内嵌后端**，需要单独部署后端服务。
 
 ---
@@ -1027,164 +1009,109 @@ VITE_SOCKET_URL=https://your-api-domain.com
 | 安全头 | Helmet（生产环境启用 CSP） |
 | 响应压缩 | compression（Gzip） |
 | 异常处理 | 全局 AllExceptionsFilter + TransformInterceptor |
-| 限流 | 全局限流 + AI 专用限流（@nestjs/throttler） |
+| 限流 | 全局限流 60次/分 + AI 限流 15次/分（@nestjs/throttler） |
 | 配置治理 | 启动时环境变量校验，缺失即阻断 |
-| AI 稳健性 | 统一封装、超时控制、错误语义化 |
+| AI 稳健性 | 连接池复用、指数退避重试、快速模型路由、上下文缓存 |
 | 请求体限制 | JSON / URLEncoded 均限制 10MB |
 | 类型安全 | 前后端均使用 TypeScript Strict 模式 |
 | API 文档 | Swagger 自动生成（仅开发环境） |
-
-### 建议后续增强
-
-- 结构化日志（pino + traceId）
-- OpenTelemetry 指标与链路追踪
-- E2E 测试（Playwright / Cypress）
-- CI/CD 流水线（lint → test → build → deploy）
-- 数据库定时备份策略
-- AI Provider 抽象层（支持多模型切换）
+| 单元测试 | Jest 8 个套件 / 107 个测试全部通过 |
 
 ---
 
-## 更新日志 (2026-03-06)
+## 项目结构
 
-### 一、AI 模型性能优化
-
-针对 DeepSeek 模型调用速度慢的问题，在后端实施了六项核心优化：
-
-#### 1. HTTP 连接池 (Keep-Alive)
-
-在 `orchestrator.service.ts` 和 `ai.service.ts` 中引入 Node.js 原生 `http.Agent` / `https.Agent`，启用 `keepAlive: true`，最大 20 个并发 socket。避免每次 AI 请求重建 TCP/TLS 握手，显著降低请求延迟。
-
-#### 2. 上下文内存缓存
-
-`orchestrator.service.ts` 中的 `loadContext()` 方法新增内存缓存机制，缓存 TTL 可通过环境变量 `CONTEXT_CACHE_TTL_MS`（默认 30 秒）配置。同一 bookId+chapterId 在 TTL 内复用已有上下文，避免重复 4-5 次数据库查询。
-
-#### 3. 并行候选生成
-
-`generateWithPlanning()` 中的多候选生成从串行改为并行（`Promise.allSettled`），3 个 API 调用同时发起，与 `continueGeneration` 保持一致。
-
-#### 4. 指数退避重试
-
-所有 AI API 调用添加重试机制（最多 3 次），遇到 429（限流）、5xx（服务端错误）或超时时，按指数退避策略等待后重试。
-
-#### 5. 快速模型路由
-
-新增 `SILICONFLOW_FAST_MODEL` 环境变量，为一致性检查、思考阶段等轻量任务自动使用更快的小模型，减少旗舰模型排队压力。
-
-#### 6. 深度思考优化
-
-`streamDeepThinkChat()` 中的推理分析阶段（thinking phase）自动使用快速模型，而最终生成阶段使用用户选择的主模型。
-
-### 二、多模型动态切换
-
-#### 后端 API
-
-| 新增端点 | 方法 | 说明 |
-|----------|------|------|
-| `/ai/models` | GET | 返回可用模型列表和默认模型 |
-
-- `ChatMessageDto` 和 `DeepThinkChatDto` 新增可选 `modelId` 字段
-- `OrchestratorService` 新增 `availableModels` 白名单、`resolveModel()` 安全解析
-- 所有 AI 调用支持 `modelOverride` 参数，非白名单 ID 自动回退默认模型
-
-#### 当前可用模型
-
-| 模型 ID | 显示名 | 速度 | 说明 |
-|---------|--------|------|------|
-| `Pro/deepseek-ai/DeepSeek-V3.2` | DeepSeek V3.2 | 标准 | 旗舰模型，质量最高 |
-| `Pro/zhipuai/GLM-5` | GLM-5 | 标准 | 智谱高质量模型 |
-| `Pro/MiniMaxAI/MiniMax-M2.5` | MiniMax M2.5 | 快速 | 快速响应，均衡质量 |
-
-#### 前端实现
-
-- `agent.ts` Store 新增状态：`availableModels`、`selectedModelId`（localStorage 持久化）、`currentModelLabel`、`effectiveModelId`
-- `AiPanelHeader.vue` 顶部品牌区域改为可点击模型选择器，Teleport 到 body 的固定定位下拉菜单
-- 选择后，所有聊天/深度思考请求自动携带 `modelId` 参数
-- 内置 fallback 模型列表，API 不可用时仍可使用
-
-### 三、新手引导系统
-
-为首次注册用户提供分步悬浮引导卡片，覆盖首页和编辑器全部核心功能。
-
-#### 技术实现
-
-| 文件 | 用途 |
-|------|------|
-| `frontend/src/composables/useOnboarding.ts` | 通用引导 composable，管理步骤序列、位置计算、localStorage 完成标记 |
-| `frontend/src/components/OnboardingCard.vue` | 引导卡片组件：SVG mask 遮罩高亮 + 品牌色光圈 + 弹性动画 + 圆点进度 |
-
-#### 首页引导 (HomeView) — 4 步
-
-| 步骤 | 高亮目标 | 说明 |
-|------|---------|------|
-| 1 | 欢迎横幅 | 介绍智文写作助手整体功能 |
-| 2 | 统计卡片 | 讲解作品总数/今日字数/连续天数 |
-| 3 | 新建作品按钮 | 引导创建第一部作品 |
-| 4 | 书籍网格 | 说明点击进入编辑器 |
-
-#### 编辑器引导 (BookEditorView) — 9 步
-
-| 步骤 | 高亮目标 | 说明 |
-|------|---------|------|
-| 1 | 顶部工具栏 | 字体/历史/查找替换/撤销AI 操作 |
-| 2 | 章节管理面板 | 左侧章节列表和卷组结构 |
-| 3 | 富文本编辑器 | 核心写作区域和浮动格式栏 |
-| 4 | 右侧工具栏 | 9 个工具按钮总览 |
-| 5 | AI 助手按钮 | AI 对话和多种写作能力 |
-| 6 | 大纲与世界观 | 剧情线/伏笔/设定管理 |
-| 7 | 角色管理 | 角色档案和关系图谱 |
-| 8 | 智能润色 | Copilot 风格逐处修改 |
-| 9 | 底部状态栏 | 字数统计和快捷操作 |
-
-#### 视觉特性
-
-- SVG mask 挖空遮罩 + `rgba(15,23,42,0.5)` 蓝调半透明背景
-- 品牌蓝光圈高亮 (`boxShadow: 0 0 0 3px rgba(79,124,255,0.5)`)
-- 顶部渐变装饰条 (brand → indigo → purple)
-- `cubic-bezier(0.16,1,0.3,1)` 弹性入场动画
-- 圆点进度指示器（当前步骤为胶囊形态）
-- 最后一步显示 "开始使用 🎉"
-
-#### 行为逻辑
-
-- 仅首次访问触发（`localStorage` 标记 `onboarding_home_done` / `onboarding_editor_done`）
-- 数据加载完成后延迟启动（首页 600ms，编辑器 800ms）
-- 支持"上一步/下一步/跳过引导"操作
-- 完成或跳过后永久不再显示
-- 重制方法：`localStorage.removeItem('onboarding_home_done')`
-
-### 四、新增环境变量
-
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `SILICONFLOW_FAST_MODEL` | `Qwen/Qwen2.5-7B-Instruct` | 轻量任务使用的快速模型 |
-| `CONTEXT_CACHE_TTL_MS` | `30000` | 上下文缓存 TTL（毫秒） |
-
-### 五、变更文件汇总
-
-#### 后端
-| 文件 | 变更类型 |
-|------|---------|
-| `backend/src/agent/orchestrator.service.ts` | 重大修改：连接池、缓存、并行生成、重试、快速模型、模型切换 |
-| `backend/src/ai/ai.service.ts` | 修改：连接池、重试机制、默认模型更新 |
-| `backend/src/agent/agent.controller.ts` | 修改：新增 GET /ai/models 端点、modelId 透传 |
-| `backend/src/agent/dto/agent.dto.ts` | 修改：ChatMessageDto/DeepThinkChatDto 添加 modelId |
-| `backend/src/config/env.validation.ts` | 修改：新增环境变量验证 |
-| `backend/.env` / `.env.example` | 修改：新增配置项 |
-
-#### 前端
-| 文件 | 变更类型 |
-|------|---------|
-| `frontend/src/stores/agent.ts` | 修改：模型选择状态、API 调用携带 modelId |
-| `frontend/src/components/AiPanelHeader.vue` | 修改：模型选择下拉菜单（Teleport + fixed 定位） |
-| `frontend/src/composables/useOnboarding.ts` | **新增**：通用引导 composable |
-| `frontend/src/components/OnboardingCard.vue` | **新增**：引导卡片组件 |
-| `frontend/src/views/HomeView.vue` | 修改：data-guide 属性 + 引导集成 |
-| `frontend/src/views/BookEditorView.vue` | 修改：data-guide 属性 + 引导集成 |
-
-### 测试状态
-
-所有 8 个测试套件、104 个测试全部通过。
+```
+ai-plus/
+├── README.md                        # 本文档
+├── SPEC.md                          # 技术规格文档
+├── DEPLOY.md                        # 部署指南
+│
+├── backend/                         # NestJS 后端
+│   ├── prisma/
+│   │   ├── schema.prisma            # 数据模型定义（34 个表）
+│   │   └── migrations/              # 数据库迁移文件
+│   ├── src/
+│   │   ├── main.ts                  # 启动入口（安全/压缩/校验/日志）
+│   │   ├── app.module.ts            # 根模块（19 个业务模块注册）
+│   │   ├── prisma.service.ts        # Prisma 数据库服务
+│   │   ├── agent/                   # AI 智能体编排（核心）
+│   │   │   ├── orchestrator.service.ts  # 编排器：续写/润色/补全/编排/模型切换
+│   │   │   ├── agent.controller.ts      # 40+ AI 端点
+│   │   │   └── dto/                     # 数据传输对象
+│   │   ├── ai/                      # AI 通用服务（问答/建议/写作）
+│   │   ├── assistant/               # 对话助手
+│   │   ├── auth/                    # JWT 认证（Passport）
+│   │   ├── book/                    # 书籍管理
+│   │   ├── chapter/                 # 章节管理（含写作者视角）
+│   │   ├── character/               # 角色档案/关系/情绪/成长
+│   │   ├── common/                  # 公共模块
+│   │   │   ├── constants/           # 常量定义
+│   │   │   ├── filters/             # 全局异常过滤器
+│   │   │   ├── interceptors/        # 日志 + 响应格式化拦截器
+│   │   │   └── redis/               # Redis 缓存模块
+│   │   ├── config/                  # 环境变量启动校验
+│   │   ├── consistency/             # 一致性检查（规则引擎+报告）
+│   │   ├── document/                # 文档管理
+│   │   ├── gateway/                 # Socket.io 协作网关
+│   │   ├── planner/                 # 大纲规划与影响分析
+│   │   ├── rag/                     # RAG 检索增强（向量嵌入+语义检索）
+│   │   ├── scene/                   # 场景管理与自动分割
+│   │   ├── stats/                   # 写作统计与日历
+│   │   ├── upload/                  # 文件上传（5MB 限制）
+│   │   ├── users/                   # 用户管理
+│   │   └── volume/                  # 卷管理
+│   ├── package.json
+│   ├── tsconfig.json
+│   └── jest.config.js
+│
+├── frontend/                        # Vue 3 前端
+│   ├── electron/                    # Electron 桌面应用
+│   │   ├── main.cjs                 # 主进程（窗口/托盘/菜单/IPC）
+│   │   └── preload.cjs              # 安全预加载脚本
+│   ├── src/
+│   │   ├── main.ts                  # Vue 应用入口
+│   │   ├── App.vue                  # 根组件
+│   │   ├── assets/
+│   │   │   └── main.css             # 全局样式 + TipTap + 润色动画
+│   │   ├── components/              # 12 个核心组件
+│   │   │   ├── Sidebar.vue              # 侧边导航栏
+│   │   │   ├── RightToolPanel.vue       # 右侧 8 大创作工具面板
+│   │   │   ├── ThreeLayerPanel.vue      # AI 三层面板（战略/战术/执行）
+│   │   │   ├── OrchestrationPanel.vue   # 多步编排任务面板
+│   │   │   ├── AiPanelHeader.vue        # AI 面板顶栏（含模型切换）
+│   │   │   ├── OnboardingCard.vue       # 新手引导浮动卡片
+│   │   │   ├── CharacterEditor.vue      # 角色全屏编辑器（4 维管理）
+│   │   │   ├── WorldSettingEditor.vue   # 世界观全屏编辑器
+│   │   │   ├── PlotLineEditor.vue       # 剧情线全屏编辑器
+│   │   │   ├── ForeshadowingEditor.vue  # 伏笔全屏编辑器
+│   │   │   ├── RelationshipGraph.vue    # SVG 力导向关系图
+│   │   │   └── InlinePolishPlugin.ts    # TipTap Copilot 行内润色插件
+│   │   ├── composables/
+│   │   │   ├── useSocket.ts         # Socket.io 组合式函数
+│   │   │   └── useOnboarding.ts     # 新手引导系统 composable
+│   │   ├── lib/
+│   │   │   ├── api.ts               # Axios HTTP 封装（JWT 自动附加）
+│   │   │   └── textToHtml.ts        # 文本 → HTML 转换
+│   │   ├── stores/                  # 5 个 Pinia Store
+│   │   │   ├── agent.ts             # AI 代理 Store（核心状态+模型切换）
+│   │   │   ├── ai.ts                # AI 通用 Store
+│   │   │   ├── auth.ts              # 认证 Store
+│   │   │   ├── book.ts              # 书籍 Store
+│   │   │   └── document.ts          # 文档 Store
+│   │   └── views/                   # 5 个页面视图
+│   │       ├── AuthView.vue         # 登录注册页
+│   │       ├── HomeView.vue         # 主页仪表板（含新手引导）
+│   │       ├── BookEditorView.vue   # 主编辑器（TipTap + 行内润色 + 9步引导）
+│   │       ├── StatsView.vue        # 写作统计仪表盘
+│   │       └── LandingPromo.vue     # 产品宣传落地页
+│   ├── package.json
+│   ├── vite.config.ts               # Vite 配置（/api → 3001 代理）
+│   ├── tailwind.config.js           # Tailwind 自定义设计令牌
+│   └── tsconfig.json
+│
+└── picture/                         # 产品截图资源
+```
 
 ---
 
@@ -1197,6 +1124,7 @@ VITE_SOCKET_URL=https://your-api-domain.com
 1. 检查 `SILICONFLOW_API_KEY` 是否正确
 2. 确认网络可访问 `api.siliconflow.cn`
 3. 增大 `SILICONFLOW_TIMEOUT_MS`（建议生产 60000+）
+4. 系统已内置指数退避重试（最多 3 次），临时性错误会自动恢复
 
 ### Q: 前端请求 404 / 跨域失败
 - **本地开发**：确保 `VITE_API_URL` 为空（自动走 Vite 代理）
@@ -1212,99 +1140,27 @@ VITE_SOCKET_URL=https://your-api-domain.com
 ### Q: Electron 打包后连不上后端
 桌面应用不内嵌后端，需单独部署后端并在 `VITE_API_URL` 中指定地址后重新打包。
 
-### Q: 构建产物体积偏大
-主编辑器 chunk (~560KB min / ~170KB gzip) 较大，可通过以下方式优化：
-- `vite.config.ts` 中配置 `build.rollupOptions.output.manualChunks` 拆分 TipTap
-- 已启用路由懒加载
-- 部署时启用 Nginx Gzip 压缩即可
+### Q: 如何切换 AI 模型
+在编辑器右侧 AI 面板顶部点击模型名称即可切换。选择会持久化到 localStorage。非白名单模型 ID 会自动回退到默认模型。
 
----
-
-## 项目结构
-
+### Q: 如何重置新手引导
+浏览器控制台执行：
+```js
+localStorage.removeItem('onboarding_home_done')
+localStorage.removeItem('onboarding_editor_done')
 ```
-ai+/
-├── README.md                        # 本文档
-├── SPEC.md                          # 技术规格文档
-│
-├── backend/                         # NestJS 后端
-│   ├── prisma/
-│   │   ├── schema.prisma            # 数据模型定义（31 个表）
-│   │   └── migrations/              # 数据库迁移文件
-│   ├── src/
-│   │   ├── main.ts                  # 启动入口
-│   │   ├── app.module.ts            # 根模块
-│   │   ├── prisma.service.ts        # Prisma 数据库服务
-│   │   ├── agent/                   # AI 智能体编排（核心）
-│   │   │   ├── orchestrator.service.ts  # 编排器：续写/润色/补全/关系建议
-│   │   │   ├── agent.controller.ts      # AI 相关全部接口
-│   │   │   └── dto/                     # 数据传输对象
-│   │   ├── ai/                      # AI 通用服务
-│   │   ├── assistant/               # 对话助手
-│   │   ├── auth/                    # JWT 认证（Passport）
-│   │   ├── book/                    # 书籍管理
-│   │   ├── chapter/                 # 章节管理
-│   │   ├── character/               # 角色服务
-│   │   ├── common/                  # 公共模块
-│   │   │   ├── filters/             # 全局异常过滤器
-│   │   │   ├── interceptors/        # 日志 + 响应格式化拦截器
-│   │   │   └── redis/               # Redis 缓存模块
-│   │   ├── config/                  # 环境变量校验
-│   │   ├── consistency/             # 一致性检查服务
-│   │   ├── document/                # 文档管理
-│   │   ├── gateway/                 # Socket.io 协作网关
-│   │   ├── planner/                 # 大纲规划服务
-│   │   ├── rag/                     # 检索增强（向量化）
-│   │   ├── scene/                   # 场景服务
-│   │   ├── stats/                   # 统计
-│   │   ├── upload/                  # 文件上传
-│   │   ├── users/                   # 用户管理
-│   │   └── volume/                  # 卷管理
-│   ├── package.json
-│   ├── tsconfig.json
-│   ├── jest.config.js
-│   └── .env.example                 # 环境变量模板
-│
-├── frontend/                        # Vue 3 前端
-│   ├── electron/                    # Electron 桌面应用
-│   │   ├── main.cjs                 # 主进程（窗口/托盘/菜单/IPC）
-│   │   └── preload.cjs              # 安全预加载脚本
-│   ├── src/
-│   │   ├── main.ts                  # Vue 应用入口
-│   │   ├── App.vue                  # 根组件
-│   │   ├── assets/
-│   │   │   └── main.css             # 全局样式 + TipTap + 润色动画
-│   │   ├── components/
-│   │   │   ├── Sidebar.vue              # 侧边导航栏
-│   │   │   ├── ThreeLayerPanel.vue      # AI 三层面板（战略/战术/执行）
-│   │   │   ├── AiPanelHeader.vue        # AI 面板顶栏（含模型切换下拉）
-│   │   │   ├── OnboardingCard.vue       # 新手引导浮动卡片组件
-│   │   │   ├── CharacterEditor.vue      # 角色全屏编辑器（4 维管理）
-│   │   │   ├── WorldSettingEditor.vue   # 世界观全屏编辑器
-│   │   │   ├── PlotLineEditor.vue       # 剧情线全屏编辑器
-│   │   │   ├── ForeshadowingEditor.vue  # 伏笔全屏编辑器
-│   │   │   ├── RelationshipGraph.vue    # SVG 力导向关系图
-│   │   │   └── InlinePolishPlugin.ts    # TipTap Copilot 行内润色插件
-│   │   ├── composables/
-│   │   │   ├── useSocket.ts         # Socket.io 组合式函数
-│   │   │   └── useOnboarding.ts     # 新手引导系统 composable
-│   │   ├── lib/
-│   │   │   ├── api.ts               # Axios HTTP 封装
-│   │   │   └── textToHtml.ts        # 文本 → HTML 转换
-│   │   ├── stores/
-│   │   │   ├── agent.ts             # AI 代理 Store（~1800行，核心状态）
-│   │   │   ├── ai.ts                # AI 通用 Store
-│   │   │   ├── auth.ts              # 认证 Store
-│   │   │   ├── book.ts              # 书籍 Store
-│   │   │   └── document.ts          # 文档 Store
-│   │   └── views/
-│   │       └── BookEditorView.vue   # 主编辑器视图（TipTap + 行内润色）
-│   ├── package.json
-│   ├── vite.config.ts               # Vite 配置（代理/别名）
-│   ├── tailwind.config.js           # Tailwind 自定义设计令牌
-│   ├── tsconfig.json
-│   └── .env.example                 # 前端环境变量模板
-```
+
+### Q: GLM 模型全文分析返回原始 JSON 代码块
+GLM 系列模型在全文分析时可能返回 fenced JSON 而非自然语言。系统已内置兼容处理：自动提取结构化 JSON 中的建议项，将响应体转换为可读摘要文本，确保前端展示正常。如仍遇到类似情况，切换到 DeepSeek V3.2 可获得最佳输出质量。
+
+### Q: AI 辅助字段补全返回格式异常
+部分模型可能返回本地化 key 或伪 JSON 格式。后端 `assist-content` 接口已做 key 归一化处理，兼容各模型输出差异。建议对角色字段补全结果逐字段确认后采纳，避免一键全量接受。
+
+### Q: 普通自然语言聊天误触发自动操作
+已修复：普通知识问答（如「主角动机是什么」「世界观优缺点」）现在只返回文字回答，不再自动触发创建角色/剧情线/创意计划等操作，`suggestedActions` 在纯对话模式下为空。
+
+### Q: 创意计划执行后看不到新增内容
+执行创意计划后，世界观、角色、剧情线、伏笔、章节会逐步批量创建。请在左侧数据面板刷新查看新增内容。如果部分资源创建失败，检查后端日志中是否有并发限流（AI_THROTTLE_LIMIT）触发。
 
 ---
 

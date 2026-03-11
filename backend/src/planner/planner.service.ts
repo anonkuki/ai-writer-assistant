@@ -245,4 +245,55 @@ export class PlannerService {
       where: { id },
     });
   }
+
+  // ==================== 章纲（章节大纲） ====================
+
+  /**
+   * 获取书籍的章纲列表
+   */
+  async getOutlines(bookId: string) {
+    return this.prisma.outline.findMany({
+      where: { bookId },
+      orderBy: { order: 'asc' },
+    });
+  }
+
+  /**
+   * 创建章纲
+   */
+  async createOutline(bookId: string, input: { title: string; content?: string }) {
+    const maxOrder = await this.prisma.outline.findFirst({
+      where: { bookId },
+      orderBy: { order: 'desc' },
+      select: { order: true },
+    });
+
+    return this.prisma.outline.create({
+      data: {
+        bookId,
+        title: input.title,
+        content: input.content || '',
+        order: (maxOrder?.order ?? 0) + 1,
+      },
+    });
+  }
+
+  /**
+   * 更新章纲
+   */
+  async updateOutline(id: string, input: { title?: string; content?: string; order?: number }) {
+    return this.prisma.outline.update({
+      where: { id },
+      data: input,
+    });
+  }
+
+  /**
+   * 删除章纲
+   */
+  async deleteOutline(id: string) {
+    return this.prisma.outline.delete({
+      where: { id },
+    });
+  }
 }

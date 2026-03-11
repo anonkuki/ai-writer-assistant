@@ -628,3 +628,37 @@ model ConsistencyReport {
 
   @@index([bookId])
 }
+
+// ==================== Strand Weave 节奏系统 ====================
+
+// 章节情节线记录（Quest/Fire/Constellation）
+model StrandRecord {
+  id              String   @id @default(uuid())
+  bookId          String
+  chapterId       String   @unique // 每章只有一条记录
+  chapterOrder    Int      // 章节序号（冗余，便于查询排序）
+  dominant        String   // quest | fire | constellation
+  questRatio      Float    @default(0)  // 主线占比 0-1
+  fireRatio       Float    @default(0)  // 感情线占比 0-1
+  constellationRatio Float @default(0)  // 世界观线占比 0-1
+  intensity       String   @default("medium") // high | medium | low
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([bookId, chapterOrder])
+}
+
+// 节奏检查报告
+model PacingReport {
+  id              String   @id @default(uuid())
+  bookId          String
+  chapterId       String?  // 单章检查时有值
+  score           Float    @default(1.0) // 0-100
+  pass            Boolean  @default(true)
+  issues          String   // JSON: PacingIssue[]
+  metrics         String   // JSON: PacingMetrics
+  summary         String?
+  checkedAt       DateTime @default(now())
+
+  @@index([bookId])
+}

@@ -699,14 +699,7 @@ export class OrchestratorService {
       orderBy: { order: 'asc' },
       select: { id: true, title: true, order: true, wordCount: true, status: true },
     });
-    const chaptersOverview = allChapters.length
-      ? allChapters
-          .map(
-            (c: any) =>
-              `${c.order}. ${c.title} (${c.wordCount}字${c.id === chapterId ? ' ← 当前编辑' : ''})`,
-          )
-          .join('\n')
-      : '尚无章节';
+    const chaptersOverview = this.buildChaptersOverview(allChapters, chapterId);
 
     // == 构建角色（含详细信息） ==
     const characterDetails =
@@ -755,7 +748,18 @@ export class OrchestratorService {
         .map((pl: any) => `[${pl.type}]「${pl.title}」: ${(pl.description || '').slice(0, 80)}`)
         .join('\n') || '无';
 
+    // == 章纲详情 ==
+    const outlineDetail =
+      (context.outlines || [])
+        .map((o: any) => `「${o.title}」: ${(o.content || '').slice(0, 80)}`)
+        .join('\n') || '无';
+
     const systemPrompt = `你是一个专业的AI小说创作助手。你不仅提供分析和建议，更要**主动执行操作**帮助用户完成创作。
+
+【核心原则——内外在联动】
+章节内容是"外在"，世界观/角色/剧情线/章纲/伏笔是"内在"。
+实现外在需求（写章节）前，必须先确保内在完整；写完后，内在也要同步更新。
+当内在缺失时，先从现有章节内容中提取补全，再让内外保持自洽。
 
 ══════ 当前书籍全貌 ══════
 📚 世界观: ${worldDetail}
@@ -765,6 +769,8 @@ ${characterDetails}
 ${plotlineDetail}
 🔮 伏笔 (${(context.foreshadowings || []).length}):
 ${foreshadowingDetail}
+📝 章纲 (${(context.outlines || []).length}):
+${outlineDetail}
 
 📋 章节列表 (${allChapters.length}章):
 ${chaptersOverview}
@@ -774,8 +780,11 @@ ${contentSnippet ? `\n--- 编辑器末尾内容 ---\n${contentSnippet}\n---` : '
 
 ══════ 行为规则 ══════
 1. **智能路由**：先分析用户意图，再选择最合适的操作。判断标准（按优先级）：
+   - 提到"根据当前内容/已有章节+编写/写最新/下一章"需要扫描全书上下文 → **orchestrate**（多步编排：先分析→补全设定→更新章纲→写章节）
+   - 提到"补全/填补/补充/完善+设定/世界观/角色/章纲/大纲/伏笔/金手指"或"先分析再写" → **orchestrate**
+   - 提到"根据现有内容/已有内容/当前内容+填补/补全/补充/完善" → **orchestrate**（从现有章节中提取信息补全内在设定）
    - 提到"编写/写/开始写+第N章" 或 "新建章节并写内容" → **create_chapter**（新建指定章节并生成内容）
-   - 提到"写小说/创作计划/大纲/设定/世界观+角色/开始写/前N章" → creative_plan
+   - 提到从零"写小说/写一本/创作一部新小说/前N章"等明确从零开始 → creative_plan（仅限全新创作）
    - 提到"续写/继续写/接着写/往下写"（对当前章节追加内容） → 先描述续写走向，再 agent_command(continue)
    - 提到"改进/润色/分段/优化" → agent_command(improve)
    - 提到"扩写/详细/展开/丰富" → agent_command(expand)
@@ -784,49 +793,73 @@ ${contentSnippet ? `\n--- 编辑器末尾内容 ---\n${contentSnippet}\n---` : '
    - 提到剧情线/故事线 → create_plotline
    - 提到伏笔/暗示/线索 → create_foreshadowing
    - 提到"分析全文/通读全书/检查伏笔/角色弧线/节奏分析/找问题" → analyze_text
+   - 提到"给出/设计/规划/列出+大纲/章纲/三幕式"或"基于当前剧情+大纲" → 在回复中输出章纲内容 + **必须附带 save_outline 操作**
+   - 提到"将此/把这个+大纲/章纲+保存/应用"或"保存到章纲维度" → 从对话历史提取章纲内容 + save_outline 操作
    - 纯粹提问/讨论 → 不添加ACTIONS，仅回复文字
-
-**关键区分**：
-- "根据当前内容编写第四章" = 新建第四章 → **create_chapter**
+- "编写第4章：标题" = 用户已明确标题和方向，简单新建 → **create_chapter**
 - "继续写当前章节" = 在当前打开的章节后面追加内容 → agent_command(continue)
-- "写一本关于XX的小说" = 从零开始创建整部小说 → creative_plan
+- "写一本关于XX的新小说" = 从零开始创建整部小说 → creative_plan
+- **注意：如果书籍已有章节内容，用户要求补全/填补/完善设定类信息，绝对不要使用 creative_plan，必须使用 orchestrate**
 
 2. **回复格式**：
+   - **多步编排请求**：说明将启动多步编排流程，简述预计步骤（如：先分析→补全设定→编写章纲→写正文）
    - **新建章节请求**：说明将创建哪一章，简述章节内容方向
    - **续写请求**：必须先说明续写方向，格式为「接下来续写的内容为：（简要描述续写情节走向，1-3句话概括）」，然后添加ACTIONS
    - **其他请求**：正文简短（2-4句），说明你判断了什么意图、将执行什么。不需要展开细节。
 3. 必须在回复末尾添加 <!--ACTIONS:[...]-->，否则操作不会执行。
 4. 可用ACTIONS类型：
 
-A) 创作计划（创建完整设定/大纲，或创作多个新章节）：
-<!--ACTIONS:[{"type":"creative_plan","label":"描述","data":{"prompt":"用户请求完整描述","chapterCount":数字}}]-->
+A) 多步编排（复杂请求：需要扫描上下文、补全缺失设定、更新章纲、写最新章等）：
+<!--ACTIONS:[{"type":"orchestrate","label":"描述","data":{"message":"用户原始请求"}}]-->
+适用：编写最新章、根据内容写下一章、补全设定后写章节等需要多步协同的请求。
 
-B) 对当前章节内容操作（续写/改进/扩写/改写/润色等需要打开章节）：
+B) 创作计划（仅限从零创建全新小说，绝不用于已有章节内容的补全/填补）：
+<!--ACTIONS:[{"type":"creative_plan","label":"描述","data":{"prompt":"用户请求完整描述","chapterCount":数字}}]-->
+注意：如果书籍已有章节内容，不论用户怎么说，都不要用 creative_plan，而应该用 orchestrate。
+
+C) 对当前章节内容操作（续写/改进/扩写/改写/润色等需要打开章节）：
 <!--ACTIONS:[{"type":"agent_command","label":"描述","data":{"command":"continue或improve或expand或edit"}}]-->
 
-C) 新建章节并生成内容（用户要求编写某一章、新建下一章等）：
+D) 新建章节并生成内容（用户要求编写某一章、新建下一章等）：
 <!--ACTIONS:[{"type":"create_chapter","label":"编写第N章: 章节标题","data":{"title":"章节标题","generateContent":true,"prompt":"基于已有内容的章节写作方向描述"}}]-->
 注意：title 格式应为"第N章 标题"，prompt 应包含你对这章剧情的构思（基于已有章节和设定）。
 
-D) 创建角色：
+E) 创建角色：
 <!--ACTIONS:[{"type":"create_character","label":"创建角色: XXX","data":{"name":"角色名","role":"protagonist/antagonist/supporting","personality":"性格描述","background":"背景","goal":"目标","strength":"优势","weakness":"弱点"}}]-->
 
-E) 创建剧情线：
+F) 创建剧情线：
 <!--ACTIONS:[{"type":"create_plotline","label":"创建剧情线: XXX","data":{"title":"剧情线标题","type":"MAIN或SUB或HIDDEN","description":"详细描述"}}]-->
 
-F) 创建伏笔：
+G) 创建伏笔：
 <!--ACTIONS:[{"type":"create_foreshadowing","label":"植入伏笔: XXX","data":{"title":"伏笔标题","content":"伏笔内容描述"}}]-->
 
-G) 全文分析（读取全部章节内容，分析伏笔/角色/节奏等，给出建议）：
+H) 全文分析（读取全部章节内容，分析伏笔/角色/节奏等，给出建议）：
 <!--ACTIONS:[{"type":"analyze_text","label":"分析描述","data":{"analysisType":"foreshadowing或character_arc或pacing或comprehensive"}}]-->
 analysisType 说明: foreshadowing=伏笔分析, character_arc=角色弧线, pacing=节奏分析, comprehensive=全面分析
 
-H) 多个操作可以组合为一个数组。
+I) 保存/应用章纲到大纲维度：
+<!--ACTIONS:[{"type":"save_outline","label":"保存章纲: 第N章","data":{"title":"第N章 标题","content":"完整章纲文本"}}]-->
+当用户要求"把章纲应用/保存到大纲"、"更新第X章章纲"、"保存到章纲部分"时使用。
+data.content 必须填入完整章纲文本（不是摘要）。如果用户引用了之前对话中生成的章纲，从对话历史中提取完整内容。
+
+J) 多个操作可以组合为一个数组。
 
 5. label字段写具体描述，不要写"执行操作"。
-6. creative_plan 的 data.prompt 需包含用户完整意图描述。
+6. creative_plan 的 data.prompt 需包含用户完整意图描述。仅限从零创建新小说时才用。
 7. 如果用户的请求需要当前章节内容但未打开任何章节，先提醒用户打开章节。
-8. **新建章节** vs **续写当前章节**：用户说"编写第X章"时用 create_chapter；说"继续写/接着写"时用 agent_command(continue)。`;
+8. **新建章节** vs **续写当前章节** vs **多步编排**：
+   - 用户说"编写第X章"时用 create_chapter
+   - 说"继续写/接着写"时用 agent_command(continue)
+   - 说"根据当前内容写最新章/补全设定后写/填补世界观角色大纲伏笔"时用 orchestrate
+9. **重要**：当书籍已有${allChapters.length}个章节时，"补全/填补/完善世界观/角色/大纲/伏笔"等请求必须用 orchestrate（不是 creative_plan）
+10. **🔴 关键规则：当你在回复中生成了章纲/大纲内容时，必须同时附带 save_outline 操作**
+   例如用户说"给出下一章的大纲"、"设计第16章章纲"、"基于当前剧情给出三幕式大纲"，你应该：
+   (a) 在回复正文中输出章纲内容
+   (b) 在末尾附带 save_outline 操作，data.content 填入你生成的完整章纲文本
+   (c) 回复末尾询问"已为您生成章纲，点击下方按钮可直接保存到章纲维度。"
+   这样用户只需一键确认，无需再单独输入"保存到章纲"。
+11. **当用户引用之前的对话内容**（如"把这个章纲应用到..."、"保存到章纲维度"、"用上面的..."），你**必须**从对话历史中找到完整的章纲/大纲内容，放入 save_outline 的 data.content 中执行。绝不允许返回空内容。
+12. **绝不允许返回空内容**。如果不确定用户意图，至少回复一段文字询问或给出建议。`;
 
     const messages = [
       { role: 'system', content: systemPrompt },
@@ -843,14 +876,33 @@ H) 多个操作可以组合为一个数组。
         onChunk,
       );
 
-      let reply = fullReply;
-      let suggestedActions: any[] | undefined;
-      const actionsMatch = fullReply.match(/<!--ACTIONS:([\s\S]*?)-->/);
-      if (actionsMatch) {
-        reply = fullReply.replace(/<!--ACTIONS:[\s\S]*?-->/, '').trim();
-        try {
-          suggestedActions = JSON.parse(actionsMatch[1]);
-        } catch {}
+      const { reply: parsedReply, suggestedActions: parsedActions } = this.parseReplyAndActions(fullReply);
+      let reply = parsedReply;
+      let suggestedActions = parsedActions;
+
+      // 场景1: 有操作但回复文本为空 → 补充默认说明文本
+      if (!reply && suggestedActions?.length) {
+        const actionLabels = suggestedActions.map((a: any) => a.label).join('、');
+        reply = `已分析您的需求，将执行以下操作：${actionLabels}`;
+        onChunk(reply);
+      }
+
+      // 场景2: 完全无回复也无操作 → 通用意图分类器回退
+      if (!reply && !suggestedActions?.length) {
+        this.logger.warn(`StreamChat 回复为空，启动通用意图分类回退`);
+        const fallback = this.classifyIntentAndFallback(message, chatHistory, allChapters.length);
+        reply = fallback.reply;
+        suggestedActions = fallback.suggestedActions;
+        onChunk(reply);
+      }
+
+      // 场景3: 有回复但无操作 → 推断用户意图自动补充操作（AI 忘记/截断 ACTIONS 标签的兜底）
+      if (reply && !suggestedActions?.length) {
+        const inferred = this.inferMissingActions(message, allChapters.length);
+        if (inferred) {
+          suggestedActions = inferred;
+          this.logger.log(`[streamChat] AI 回复有文本但缺少 ACTIONS，自动推断: ${inferred.map((a: any) => a.type).join(', ')}`);
+        }
       }
 
       return { reply, suggestedActions };
@@ -882,14 +934,7 @@ H) 多个操作可以组合为一个数组。
       orderBy: { order: 'asc' },
       select: { id: true, title: true, order: true, wordCount: true, status: true },
     });
-    const chaptersOverview = allChapters.length
-      ? allChapters
-          .map(
-            (c: any) =>
-              `${c.order}. ${c.title} (${c.wordCount}字${c.id === chapterId ? ' ← 当前编辑' : ''})`,
-          )
-          .join('\n')
-      : '尚无章节';
+    const chaptersOverview = this.buildChaptersOverview(allChapters, chapterId);
 
     const characterDetails =
       (context.characters || [])
@@ -946,12 +991,16 @@ ${currentChapter ? `✏️ 当前章节: 第${currentChapter.order}章「${curre
 ${contentSnippet ? `--- 编辑器内容 ---\n${contentSnippet}\n---` : ''}
 
 请按以下结构输出思考过程：
-1. 用户意图分析：用户想要什么？
-2. 上下文关联：哪些已有设定/角色/剧情线与此相关？
-3. 潜在风险：是否有设定冲突、角色不一致、逻辑漏洞？
-4. 最佳策略：推荐的执行方案及理由
+1. 用户意图分析：用户想要什么？是从零创建新小说，还是基于已有内容进行补全/完善？
+2. 上下文关联：哪些已有设定/角色/剧情线与此相关？当前书籍已有多少章节内容？
+3. 操作路由判断：
+   - 如果已有章节内容且用户要求补全/填补/完善世界观/大纲/角色/伏笔等 → 应使用"orchestrate"（多步编排，从现有内容中提取补全）
+   - 如果是全新创作、从零开始 → 应使用"creative_plan"
+   - 其他情况根据具体意图判断
+4. 潜在风险：是否有设定冲突、角色不一致、逻辑漏洞？
+5. 最佳策略：推荐的执行方案及理由
 
-要求：简洁、结构化，不超过300字。`;
+要求：简洁、结构化，不超过400字。`;
 
     let thinkingText = '';
     try {
@@ -993,8 +1042,12 @@ ${thinkingText}
 
 ══════ 行为规则 ══════
 1. **智能路由**：根据用户意图及深度思考分析选择最合适的操作。判断标准（按优先级）：
+   - 提到"根据当前内容/已有章节+编写/写最新/下一章"需要扫描全书上下文 → **orchestrate**（多步编排：先分析→补全设定→更新章纲→写章节）
+   - 提到"补全/填补/完善/补充+设定/世界观/角色/章纲/大纲/伏笔/金手指"或"先分析再写" → **orchestrate**
+   - 提到"根据现有内容/已有内容+填补/补全/完善" → **orchestrate**（从现有章节中提取信息补全内在设定）
+   - 当已有多个章节但内在设定（世界观/角色/大纲等）明显缺失时，补全请求 → **orchestrate**
    - 提到"编写/写/开始写+第N章" 或 "新建章节并写内容" → **create_chapter**
-   - 提到"写小说/创作计划/大纲/设定/世界观+角色/开始写/前N章" → creative_plan
+   - 提到从零"写小说/写一本/创作一部新小说"或"从头开始写" → creative_plan（仅限从零创建新小说）
    - 提到"续写/继续写/接着写/往下写"（对当前章节追加） → 先描述续写走向，再 agent_command(continue)
    - 提到"改进/润色/分段/优化" → agent_command(improve)
    - 提到"扩写/详细/展开/丰富" → agent_command(expand)
@@ -1003,20 +1056,54 @@ ${thinkingText}
    - 提到剧情线/故事线 → create_plotline
    - 提到伏笔/暗示/线索 → create_foreshadowing
    - 提到"分析全文/通读全书/检查伏笔/角色弧线/节奏分析/找问题" → analyze_text
+   - 提到"给出/设计/规划/列出+大纲/章纲/三幕式"或"基于当前剧情+大纲" → 在回复中输出章纲内容 + **必须附带 save_outline 操作**
+   - 提到"将此/把这个+大纲/章纲+保存/应用"或"保存到章纲维度" → 从对话历史提取章纲内容 + save_outline 操作
    - 纯粹提问/讨论 → 不添加ACTIONS，仅回复文字
 
-**关键区分**："根据当前内容编写第四章" = 新建第四章 → create_chapter；"继续写当前章节" = 追加内容 → agent_command(continue)。
+**关键区分**：
+- "根据当前内容填补世界观/大纲/角色/伏笔" = 已有章节，需要从中提取补全内在设定 → **orchestrate**（这不是创建新小说！）
+- "根据当前内容编写第四章" = 需要综合上下文 → **orchestrate**
+- "编写第4章：标题" = 用户已明确标题 → create_chapter
+- "继续写当前章节" = 追加内容 → agent_command(continue)
+- "写一本关于XX的新小说" = 从零创建 → creative_plan
+- **注意：如果书籍已有章节内容，用户要求补全/填补/完善设定类信息，绝对不要使用 creative_plan，必须使用 orchestrate**
 
-2. **回复格式**：正文简短，利用深度思考结果给出更精准的建议。
-3. 必须在回复末尾添加 <!--ACTIONS:[...]-->，否则操作不会执行。
+2. **回复格式**：正文简短，利用深度思考结果给出更精准的建议。说明将执行什么操作。
+3. 必须在回复末尾添加 <!--ACTIONS:[...]-->，否则操作不会执行。如果无法确定操作类型，至少输出文字回复（不要返回空内容）。
 4. 可用ACTIONS类型：
-A) creative_plan: {"type":"creative_plan","label":"描述","data":{"prompt":"完整描述","chapterCount":数字}}
-B) agent_command: {"type":"agent_command","label":"描述","data":{"command":"continue|improve|expand|edit"}}
-C) create_chapter: {"type":"create_chapter","label":"编写第N章: 标题","data":{"title":"第N章 标题","generateContent":true,"prompt":"章节写作方向描述"}}
-D) create_character: {"type":"create_character","label":"创建角色: XXX","data":{...}}
-E) create_plotline: {"type":"create_plotline","label":"创建剧情线: XXX","data":{...}}
-F) create_foreshadowing: {"type":"create_foreshadowing","label":"植入伏笔: XXX","data":{...}}
-G) analyze_text: {"type":"analyze_text","label":"分析描述","data":{"analysisType":"..."}}`;
+
+A) 多步编排（复杂请求：需要扫描上下文、补全缺失设定、从现有内容提取信息等）：
+{"type":"orchestrate","label":"描述","data":{"message":"用户原始请求"}}
+适用：根据当前内容填补/补全世界观/大纲/角色/伏笔、编写最新章、补全设定后写章节等。
+
+B) 创作计划（仅限从零创建完整新小说）：
+{"type":"creative_plan","label":"描述","data":{"prompt":"完整描述","chapterCount":数字}}
+注意：仅当用户明确要求创建一本全新的小说时才用此类型。
+
+C) agent_command: {"type":"agent_command","label":"描述","data":{"command":"continue|improve|expand|edit"}}
+D) create_chapter: {"type":"create_chapter","label":"编写第N章: 标题","data":{"title":"第N章 标题","generateContent":true,"prompt":"章节写作方向描述"}}
+E) create_character: {"type":"create_character","label":"创建角色: XXX","data":{...}}
+F) create_plotline: {"type":"create_plotline","label":"创建剧情线: XXX","data":{...}}
+G) create_foreshadowing: {"type":"create_foreshadowing","label":"植入伏笔: XXX","data":{...}}
+H) analyze_text: {"type":"analyze_text","label":"分析描述","data":{"analysisType":"..."}}
+I) save_outline（保存/应用章纲到大纲维度）：
+{"type":"save_outline","label":"保存章纲: 第N章","data":{"title":"第N章 标题","content":"完整章纲文本"}}
+适用场景：
+- 用户要求将之前生成的章纲保存/应用到章纲维度
+- 用户让你给出某章章纲并应用
+- **你在回复中生成了章纲/大纲内容时，必须自动附带此操作**
+data.content 必须填入完整章纲文本（不是摘要），如果引用对话历史中的内容，需要完整提取。
+
+5. label字段写具体描述，不要写"执行操作"。
+6. **再次强调**：已有章节内容的情况下，"填补/补全/完善世界观/大纲/角色/伏笔"等请求必须用 orchestrate，不是 creative_plan。
+7. **🔴 关键规则：当你在回复中生成了章纲/大纲内容时，必须同时附带 save_outline 操作**
+   例如用户说"给出下一章的大纲"、"设计第16章章纲"、"基于当前剧情给出三幕式大纲"，你应该：
+   (a) 在回复正文中输出完整章纲内容
+   (b) 在末尾附带 save_outline 操作，data.content 填入你刚生成的完整章纲文本
+   (c) 回复末尾加一句"已为您生成章纲，点击下方按钮可直接保存到章纲维度。"
+   这样用户一键即可保存，无需再额外输入"保存到章纲"。
+8. **当用户引用之前的对话内容**（如"把这个章纲保存到..."、"将此大纲保存到章纲维度"、"用上面的..."），你**必须**从对话历史中找到完整的章纲/大纲内容，放入 save_outline 的 data.content 中。绝不允许返回空内容。
+9. **绝不允许返回空内容**。如果不确定用户意图，至少回复一段文字询问或给出建议。`;
 
     let fullReply = '';
     try {
@@ -1034,14 +1121,34 @@ G) analyze_text: {"type":"analyze_text","label":"分析描述","data":{"analysis
       throw err;
     }
 
-    let reply = fullReply;
-    let suggestedActions: any[] | undefined;
-    const actionsMatch = fullReply.match(/<!--ACTIONS:([\s\S]*?)-->/);
-    if (actionsMatch) {
-      reply = fullReply.replace(/<!--ACTIONS:[\s\S]*?-->/, '').trim();
-      try {
-        suggestedActions = JSON.parse(actionsMatch[1]);
-      } catch {}
+    const { reply: parsedReply, suggestedActions: parsedActions } = this.parseReplyAndActions(fullReply);
+    let reply = parsedReply;
+    let suggestedActions = parsedActions;
+
+    // 场景1: 有操作但回复文本为空 → 补充默认说明文本
+    if (!reply && suggestedActions?.length) {
+      const actionLabels = suggestedActions.map((a: any) => a.label).join('、');
+      reply = `已分析您的需求，将执行以下操作：${actionLabels}`;
+      onEvent({ type: 'token', data: { text: reply } });
+    }
+
+    // 场景2: 完全无回复也无操作 → 通用意图分类器回退（结合思考结果）
+    if (!reply && !suggestedActions?.length) {
+      this.logger.warn(`深度思考回复为空，启动通用意图分类回退`);
+      const combinedMsg = thinkingText ? `${message}\n[思考分析: ${thinkingText}]` : message;
+      const fallback = this.classifyIntentAndFallback(combinedMsg, chatHistory, allChapters.length);
+      reply = fallback.reply;
+      suggestedActions = fallback.suggestedActions;
+      onEvent({ type: 'token', data: { text: reply } });
+    }
+
+    // 场景3: 有回复但无操作 → 推断用户意图自动补充操作（AI 忘记/截断 ACTIONS 标签的兜底）
+    if (reply && !suggestedActions?.length) {
+      const inferred = this.inferMissingActions(message, allChapters.length);
+      if (inferred) {
+        suggestedActions = inferred;
+        this.logger.log(`[streamDeepThinkChat] AI 回复有文本但缺少 ACTIONS，自动推断: ${inferred.map((a: any) => a.type).join(', ')}`);
+      }
     }
 
     return { thinking: thinkingText, reply, suggestedActions };
@@ -1438,20 +1545,20 @@ ${contentPreview}
   // ==================== 带规划的完整流程 ====================
 
   private async generateWithPlanning(request: AgentRequest, context: any): Promise<AgentResponse> {
-    const { bookId, chapterId, content } = request;
+    const { bookId, chapterId, content, userInstructions } = request;
 
-    // 1. Planner Agent
+    // 1. Planner Agent — 传入章纲和用户指令
     const planningResult = await this.callAgent(
       AgentType.PLANNER,
-      this.buildPlannerPrompt(bookId, content, context),
+      this.buildPlannerPrompt(bookId, content, context, userInstructions),
     );
 
-    // 2. Writer Agent（多候选 — 并行生成）
+    // 2. Writer Agent（多候选 — 并行生成）— 传入章纲和用户指令
     const candidateCount = request.candidateCount || 3;
     const generatePromises = Array.from({ length: candidateCount }, (_, i) =>
       this.callAgent(
         AgentType.WRITER,
-        this.buildWriterPrompt(bookId, content, planningResult.result, context, 'generate'),
+        this.buildWriterPrompt(bookId, content, planningResult.result, context, 'generate', userInstructions),
         0.7 + i * 0.1,
       ),
     );
@@ -1492,9 +1599,9 @@ ${contentPreview}
   // ==================== 简化流程 ====================
 
   private async generateWithAgents(request: AgentRequest, context: any): Promise<AgentResponse> {
-    const { bookId, content, command } = request;
+    const { bookId, content, command, userInstructions } = request;
 
-    const writerPrompt = this.buildWriterPrompt(bookId, content, '', context, command);
+    const writerPrompt = this.buildWriterPrompt(bookId, content, '', context, command, userInstructions);
     const result = await this.callAgent(AgentType.WRITER, writerPrompt);
 
     const consistencyPrompt = this.buildConsistencyPrompt(bookId, result.result, context);
@@ -1942,16 +2049,317 @@ ${existingRelStr}
     return [];
   }
 
+  /**
+   * 构建章节列表概要 — 章节过多时自动截断，避免系统提示词过大
+   */
+  private buildChaptersOverview(
+    allChapters: Array<{ id: string; title: string; order: number; wordCount: number; status?: string }>,
+    currentChapterId?: string,
+  ): string {
+    if (!allChapters.length) return '尚无章节';
+    let chaptersToShow = allChapters;
+    let prefix = '';
+    if (allChapters.length > 15) {
+      const currentIdx = currentChapterId ? allChapters.findIndex(c => c.id === currentChapterId) : -1;
+      const head = allChapters.slice(0, 5);
+      const tail = allChapters.slice(-5);
+      const current = currentIdx >= 5 && currentIdx < allChapters.length - 5
+        ? [allChapters[currentIdx]]
+        : [];
+      chaptersToShow = [...head, ...(current.length ? [{ id: '...', title: '...', order: -1, wordCount: 0 } as any, ...current] : []), ...tail];
+      prefix = `(共${allChapters.length}章，仅列出关键章节)\n`;
+    }
+    return prefix + chaptersToShow.map((c: any) =>
+      c.id === '...' ? '  ...' :
+      `${c.order}. ${c.title} (${c.wordCount}字${c.id === currentChapterId ? ' ← 当前编辑' : ''})`,
+    ).join('\n');
+  }
+
+  /**
+   * 统一解析 AI 回复中的文本和 ACTIONS 操作
+   * 处理：正常 ACTIONS、JSON 格式错误、未闭合标签、多个 ACTIONS 块
+   */
+  private parseReplyAndActions(raw: string): { reply: string; suggestedActions: any[] | undefined } {
+    if (!raw || !raw.trim()) {
+      return { reply: '', suggestedActions: undefined };
+    }
+
+    let text = raw;
+    const allActions: any[] = [];
+
+    // 1) 匹配所有完整的 <!--ACTIONS:[...]-->
+    const completeRegex = /<!--ACTIONS:([\s\S]*?)-->/g;
+    let match: RegExpExecArray | null;
+    while ((match = completeRegex.exec(text)) !== null) {
+      try {
+        const parsed = JSON.parse(match[1].trim());
+        if (Array.isArray(parsed)) {
+          allActions.push(...parsed);
+        }
+      } catch (e) {
+        this.logger.warn(`ACTIONS JSON 解析失败: ${(e as Error).message}, 原始内容: ${match[1].slice(0, 200)}`);
+        // 尝试宽松解析：提取 {...} 对象
+        const objRegex = /\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g;
+        let objMatch: RegExpExecArray | null;
+        while ((objMatch = objRegex.exec(match[1])) !== null) {
+          try {
+            allActions.push(JSON.parse(objMatch[0]));
+          } catch { /* 跳过不可修复的片段 */ }
+        }
+      }
+    }
+    // 移除完整的 ACTIONS 标签
+    text = text.replace(completeRegex, '');
+
+    // 2) 处理未闭合的 <!--ACTIONS:... （流式截断导致）
+    const incompleteIdx = text.indexOf('<!--ACTIONS:');
+    if (incompleteIdx !== -1) {
+      const partial = text.slice(incompleteIdx);
+      this.logger.warn(`检测到未闭合 ACTIONS 标签，已移除: ${partial.slice(0, 100)}...`);
+      text = text.slice(0, incompleteIdx);
+    }
+
+    text = text.trim();
+    const suggestedActions = allActions.length > 0 ? allActions : undefined;
+    return { reply: text, suggestedActions };
+  }
+
+  /**
+   * 意图推断 — 当 AI 回复有文本但缺少 ACTIONS 时，根据用户消息自动补充操作
+   * 场景：AI 深度思考后返回分析文本但忘记/截断 ACTIONS 标签
+   */
+  private inferMissingActions(
+    message: string,
+    chapterCount: number,
+  ): any[] | undefined {
+    const msg = message.trim();
+
+    // 「编写/写/创作/生成 + 第N章」→ create_chapter
+    const chapterMatch = msg.match(/(编写|写|生成|创作).{0,10}第(\d+|[一二三四五六七八九十百]+)章[：:\s]*(.*)?/);
+    if (chapterMatch) {
+      const chapterNum = chapterMatch[2];
+      const titleSuffix = chapterMatch[3]?.trim();
+      const title = titleSuffix ? `第${chapterNum}章 ${titleSuffix}` : `第${chapterNum}章`;
+      this.logger.log(`[inferMissingActions] 推断 create_chapter: ${title}`);
+      return [{
+        type: 'create_chapter',
+        label: `编写${title}`,
+        data: { title, generateContent: true, prompt: message },
+      }];
+    }
+
+    // 「续写/继续写/接着写」→ agent_command(continue)
+    if (/^(续写|继续写|接着写|往下写|接下来)/.test(msg)) {
+      return [{ type: 'agent_command', label: '续写当前章节', data: { command: 'continue' } }];
+    }
+
+    // 「润色/改进/优化」→ agent_command(improve)
+    if (/(润色|改进|优化|提升|打磨).{0,6}(文本|内容|章节|段落|文笔|表达|语句|当前)/.test(msg)) {
+      return [{ type: 'agent_command', label: '润色内容', data: { command: 'improve' } }];
+    }
+
+    // 「扩写/展开/丰富」→ agent_command(expand)
+    if (/(扩写|展开|丰富|详细|充实).{0,6}(文本|内容|章节|段落|当前)/.test(msg)) {
+      return [{ type: 'agent_command', label: '扩写内容', data: { command: 'expand' } }];
+    }
+
+    // 「补全/填补设定」→ orchestrate
+    if (/(填补|补全|补充|完善|丰富).{0,6}(世界观|角色|章纲|设定|大纲|伏笔|剧情)/.test(msg)) {
+      return [{ type: 'orchestrate', label: '智能补全设定', data: { message } }];
+    }
+
+    return undefined;
+  }
+
+  /**
+   * 通用意图分类器 — 当 AI 返回空回复时，根据用户消息推断意图并生成回退操作
+   * 覆盖所有常见用户意图模式
+   */
+  private classifyIntentAndFallback(
+    message: string,
+    chatHistory: Array<{ role: string; content: string }>,
+    chapterCount: number,
+  ): { reply: string; suggestedActions?: any[] } {
+    const msg = message.trim();
+
+    // ── 1. 保存/应用章纲到大纲维度 ──
+    if (/(保存|应用|存入|写入|录入).{0,6}(章纲|大纲|纲要).{0,6}(维度|面板|设定|数据)|将.{0,4}(章纲|大纲).{0,6}(保存|应用)/.test(msg)) {
+      const outline = this.extractOutlineFromHistory(chatHistory);
+      if (outline) {
+        return {
+          reply: '已从对话历史中提取章纲内容，点击下方按钮保存到章纲维度。',
+          suggestedActions: [{
+            type: 'save_outline',
+            label: `保存章纲到大纲维度`,
+            data: { title: '章纲', content: outline },
+          }],
+        };
+      }
+      return { reply: '未在近期对话中找到章纲/大纲内容。请先让我生成章纲，然后再保存。' };
+    }
+
+    // ── 2. 生成章纲/大纲 ──
+    if (/(给出|生成|设计|写|创建|规划|拟定|制定).{0,6}(章纲|大纲|三幕式|纲要|提纲)/.test(msg) ||
+        /(章纲|大纲|三幕式|纲要|提纲).{0,4}(给|写|生成|设计)/.test(msg)) {
+      const nextChapter = chapterCount + 1;
+      return {
+        reply: `好的，我将为您生成第 ${nextChapter} 章的三幕式章纲。请稍候，我来深入分析当前剧情线索。\n\n*提示：建议使用"深度思考"模式生成更高质量的章纲。*`,
+        suggestedActions: [{
+          type: 'agent_command',
+          label: `生成第${nextChapter}章三幕式章纲`,
+          data: { command: `请基于当前所有已知剧情线索和伏笔，给出第${nextChapter}章的三幕式章纲，包含起承转合、冲突点、悬念设计和角色行动。` },
+        }],
+      };
+    }
+
+    // ── 3. 补全/完善世界观、角色、伏笔、大纲等设定 ──
+    if (/(填补|补全|补充|完善|丰富|扩展|展开|充实|增加|添加).{0,6}(世界观|大纲|角色|伏笔|设定|背景|人物|剧情线|情节)/.test(msg)) {
+      return {
+        reply: '正在为您编排补全任务…',
+        suggestedActions: [{
+          type: 'orchestrate',
+          label: '智能补全设定',
+          data: { instruction: msg },
+        }],
+      };
+    }
+
+    // ── 4. 写/续写章节 ──
+    if (/(写|续写|撰写|起草|创作|开始写).{0,4}(第.{1,6}章|下一章|新章节|章节)/.test(msg) ||
+        /第.{1,6}章.{0,4}(写|开始|创作)/.test(msg)) {
+      const targetMatch = msg.match(/第(\d+|[一二三四五六七八九十百]+)章/);
+      const label = targetMatch ? `写作第${targetMatch[1]}章` : '续写下一章';
+      return {
+        reply: `好的，我将为您${label}。点击下方按钮开始。`,
+        suggestedActions: [{
+          type: 'agent_command',
+          label,
+          data: { command: msg },
+        }],
+      };
+    }
+
+    // ── 5. 创建角色 ──
+    if (/(创建|新建|添加|设计|构思).{0,4}(角色|人物|配角|主角|反派)/.test(msg)) {
+      return {
+        reply: '正在为您构思角色…',
+        suggestedActions: [{
+          type: 'orchestrate',
+          label: '创建角色',
+          data: { instruction: msg },
+        }],
+      };
+    }
+
+    // ── 6. 创建剧情线/伏笔 ──
+    if (/(创建|新建|添加|设计|构思|植入|埋设).{0,4}(剧情线|伏笔|线索|暗线)/.test(msg)) {
+      return {
+        reply: '正在为您规划…',
+        suggestedActions: [{
+          type: 'orchestrate',
+          label: '创建剧情线/伏笔',
+          data: { instruction: msg },
+        }],
+      };
+    }
+
+    // ── 7. 分析/点评文本 ──
+    if (/(分析|点评|评价|审阅|诊断|检查).{0,6}(文本|内容|章节|段落|文笔|风格)/.test(msg)) {
+      return {
+        reply: '好的，我来为您分析。',
+        suggestedActions: [{
+          type: 'analyze_text',
+          label: '分析文本',
+          data: { analysisType: 'comprehensive' },
+        }],
+      };
+    }
+
+    // ── 8. 润色/修改 ──
+    if (/(润色|修改|优化|改进|提升|打磨|编辑).{0,6}(文本|内容|章节|段落|文笔|表达|语句)/.test(msg)) {
+      return {
+        reply: '好的，我来为您润色当前内容。',
+        suggestedActions: [{
+          type: 'agent_command',
+          label: '润色内容',
+          data: { command: msg },
+        }],
+      };
+    }
+
+    // ── 9. 继续/展开/扩写 ──
+    if (/^(继续|接着写|展开|扩写|往下写|接下来)/.test(msg)) {
+      return {
+        reply: '好的，我来继续。',
+        suggestedActions: [{
+          type: 'agent_command',
+          label: '继续创作',
+          data: { command: msg },
+        }],
+      };
+    }
+
+    // ── 10. 整体规划/从零开始 ──
+    if (/(从零|从头|整体规划|全书规划|重新规划|系统规划|创意方案)/.test(msg)) {
+      return {
+        reply: '好的，我来为您制定整体创意方案。',
+        suggestedActions: [{
+          type: 'creative_plan',
+          label: '整体创意规划',
+          data: { instruction: msg },
+        }],
+      };
+    }
+
+    // ── 默认回退：给出友好提示而非空回复 ──
+    this.logger.warn(`classifyIntentAndFallback 未匹配到意图: "${msg.slice(0, 100)}"`);
+    return {
+      reply: `抱歉，我暂时无法理解您的具体需求。您可以试试以下指令：\n\n` +
+        `• "给出下一章的三幕式章纲"\n` +
+        `• "补全世界观设定"\n` +
+        `• "续写第N章"\n` +
+        `• "分析当前章节内容"\n` +
+        `• "润色当前段落"\n` +
+        `• "创建一个新角色"\n` +
+        `• "将章纲保存到大纲维度"\n\n` +
+        `请告诉我您想做什么，我会尽力帮助您。`,
+    };
+  }
+
+  /**
+   * 从对话历史中提取最近的章纲/大纲内容
+   * 搜索 assistant 消息中包含三幕式/大纲/章纲结构化内容的最后一条
+   */
+  private extractOutlineFromHistory(chatHistory: Array<{ role: string; content: string }>): string | null {
+    // 从后往前搜索 assistant 消息
+    for (let i = chatHistory.length - 1; i >= 0; i--) {
+      const msg = chatHistory[i];
+      if (msg.role !== 'assistant') continue;
+      const content = msg.content || '';
+      // 检测是否包含章纲/大纲特征内容
+      const hasOutlineKeywords = /(三幕式|起[：:—\-]|承[：:—\-]|转[：:—\-]|第一幕|第二幕|第三幕|冲突点|悬念|开端|发展|高潮|结局|章纲|大纲概要)/.test(content);
+      const hasStructure = content.length > 100 && (content.includes('\n') || content.includes('。'));
+      if (hasOutlineKeywords && hasStructure) {
+        // 清理掉 ACTIONS 标签和尾部提示
+        let cleaned = content.replace(/<!--ACTIONS:[\s\S]*?-->/g, '').trim();
+        // 去掉末尾的"是否保存"类提示句
+        cleaned = cleaned.replace(/[\n\r]*(需要我将|是否将|要不要|点击下方|已为您生成)[\s\S]{0,100}$/, '').trim();
+        if (cleaned.length > 50) return cleaned;
+      }
+    }
+    return null;
+  }
+
   private async loadContext(bookId: string, chapterId?: string) {
     // 内存缓存：bookId 级别（不含 chapterId，章节摘要单独查）
     const cacheKey = bookId;
-    let base: { worldSettings: any; plotLines: any; characters: any; foreshadowings: any };
+    let base: { worldSettings: any; plotLines: any; characters: any; foreshadowings: any; outlines: any };
 
     const cached = this.contextCache.get(cacheKey);
     if (this.contextCacheTtlMs > 0 && cached && cached.expireAt > Date.now()) {
       base = cached.data;
     } else {
-      const [worldSettings, plotLines, characters, foreshadowings] = await Promise.all([
+      const [worldSettings, plotLines, characters, foreshadowings, outlines] = await Promise.all([
         this.prisma.worldSetting.findMany({ where: { bookId } }),
         this.prisma.plotLine.findMany({ where: { bookId }, orderBy: { order: 'asc' } }),
         this.prisma.character.findMany({
@@ -1963,8 +2371,9 @@ ${existingRelStr}
           },
         }),
         this.prisma.foreshadowing.findMany({ where: { bookId, status: 'PENDING' } }),
+        this.prisma.outline.findMany({ where: { bookId }, orderBy: { order: 'asc' } }),
       ]);
-      base = { worldSettings, plotLines, characters, foreshadowings };
+      base = { worldSettings, plotLines, characters, foreshadowings, outlines };
 
       if (this.contextCacheTtlMs > 0) {
         this.contextCache.set(cacheKey, {
@@ -1986,6 +2395,25 @@ ${existingRelStr}
   /** 手动使指定书籍的上下文缓存失效（创建/更新资源后调用） */
   invalidateContextCache(bookId: string) {
     this.contextCache.delete(bookId);
+  }
+
+  /** 将纯文本转换为 HTML 段落格式（供 TipTap 编辑器正确渲染） */
+  private plainTextToHtml(text: string): string {
+    if (!text) return '';
+    // 已是 HTML 则直接返回
+    if (/<(?:p|div|h[1-6])\b/i.test(text)) return text;
+    const escape = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    // 按双换行分段
+    const paragraphs = text.split(/\n{2,}/).filter(p => p.trim());
+    if (paragraphs.length === 0) return '<p></p>';
+    const result: string[] = [];
+    for (const p of paragraphs) {
+      const lines = p.trim().split('\n').filter(l => l.trim());
+      for (const line of lines) {
+        result.push(`<p>${escape(line.trim())}</p>`);
+      }
+    }
+    return result.join('');
   }
 
   // ==================== Agent 调用 ====================
@@ -2088,6 +2516,1274 @@ ${existingRelStr}
     return { type, result: '', status: 'failed' };
   }
 
+  // ==================== 多步编排执行引擎 ====================
+
+  /**
+   * 多步编排流式执行 — 模仿 Copilot 的任务分解→逐步思考→确认→执行流程
+   *
+   * SSE 事件协议：
+   * - step_plan:     { steps: [{ id, title, description, type }] }           — 任务分解结果
+   * - step_start:    { stepId, title, description }                          — 开始执行某步
+   * - step_thinking: { stepId, text }                                        — 该步的流式思考内容
+   * - step_result:   { stepId, summary, data?, needsConfirm? }               — 步骤结果/预览
+   * - step_done:     { stepId, success, message }                            — 步骤完成
+   * - done:          { summary, createdIds }                                 — 全部完成
+   * - error:         { message }                                             — 异常
+   */
+  async streamOrchestrate(
+    bookId: string,
+    message: string,
+    onEvent: (event: { type: string; data: any }) => void,
+    chapterId?: string,
+    currentContent?: string,
+    modelId?: string,
+    approvedSteps?: Array<{ id: string; title: string; description: string; type: string }>,
+  ): Promise<void> {
+    const startTime = Date.now();
+
+    // 1. 加载全量上下文
+    this.invalidateContextCache(bookId);
+    const context = await this.loadContext(bookId, chapterId);
+
+    const allChapters = await this.prisma.chapter.findMany({
+      where: { bookId },
+      orderBy: { order: 'asc' },
+      select: { id: true, title: true, order: true, wordCount: true, status: true, content: true },
+    });
+
+    // 构建上下文摘要
+    const chaptersOverview = this.buildChaptersOverview(allChapters as any, chapterId);
+
+    const chapterContents = allChapters
+      .filter((c: any) => c.content && c.content.length > 0)
+      .map((c: any) => `【第${c.order}章 ${c.title}】\n${typeof c.content === 'string' ? c.content.slice(0, 3000) : ''}`)
+      .join('\n\n---\n\n');
+
+    const characterDetails = (context.characters || []).map((c: any) => {
+      const profile = c.profile;
+      const parts = [`「${c.name}」(${c.role || 'supporting'})`];
+      if (profile?.personality) parts.push(`性格: ${profile.personality}`);
+      if (profile?.currentGoal) parts.push(`目标: ${profile.currentGoal}`);
+      if (profile?.background) parts.push(`背景: ${(profile.background || '').slice(0, 80)}`);
+      if (profile?.strength) parts.push(`优势: ${profile.strength}`);
+      if (profile?.weakness) parts.push(`弱点: ${profile.weakness}`);
+      return parts.join(' | ');
+    }).join('\n') || '尚无角色';
+
+    const worldDetail = (context.worldSettings || []).map((ws: any) => {
+      const parts: string[] = [];
+      if (ws.genre) parts.push(`类型: ${ws.genre}`);
+      if (ws.theme) parts.push(`主题/背景: ${ws.theme}`);
+      if (ws.tone) parts.push(`基调: ${ws.tone}`);
+      return parts.join(' | ');
+    }).join('; ') || '未设定';
+
+    const plotlineDetail = (context.plotLines || []).map((pl: any) =>
+      `[${pl.type}]「${pl.title}」: ${(pl.description || '').slice(0, 120)}`
+    ).join('\n') || '无';
+
+    const foreshadowingDetail = (context.foreshadowings || []).map((f: any) =>
+      `「${f.title}」(${f.status}): ${(f.content || '').slice(0, 80)}`
+    ).join('\n') || '无';
+
+    const outlineDetail = (context.outlines || []).map((o: any) =>
+      `${o.order}. 「${o.title}」: ${(o.content || '').slice(0, 150)}`
+    ).join('\n') || '无';
+
+    const contentSnippet = currentContent
+      ? (currentContent.length > 1500 ? `...${currentContent.slice(-1500)}` : currentContent)
+      : '';
+
+    const currentChapter = chapterId ? allChapters.find((c: any) => c.id === chapterId) : null;
+
+    // 2. Phase 1 — 使用 AI 分解任务为多步执行计划
+    onEvent({ type: 'phase', data: { phase: 'planning', message: '正在分析任务并制定执行计划...' } });
+
+    const planSystemPrompt = `你是一个专业的AI小说创作编排器。你的任务是将用户的创作请求分解为具体可执行的子任务清单。
+
+══════ 当前书籍完整状态 ══════
+📚 世界观: ${worldDetail}
+👥 角色 (${(context.characters || []).length}):
+${characterDetails}
+📖 剧情线 (${(context.plotLines || []).length}):
+${plotlineDetail}
+🔮 伏笔 (${(context.foreshadowings || []).length}):
+${foreshadowingDetail}
+📝 章纲/大纲 (${(context.outlines || []).length}):
+${outlineDetail}
+📋 章节列表 (${allChapters.length}章):
+${chaptersOverview}
+${currentChapter ? `✏️ 当前编辑: 第${currentChapter.order}章「${currentChapter.title}」` : ''}
+${contentSnippet ? `--- 近期内容 ---\n${contentSnippet.slice(0, 600)}\n---` : ''}
+
+══════ 输出要求 ══════
+请将用户请求分解为 3-8 个有序子任务，每个子任务是一个具体可执行的步骤。
+
+规则：
+1. 第一步必须是"阅读与分析当前状态"（读取相关设定/章节/角色）
+2. 【前置补全规则——用外在补全内在】分析步骤完成后，检查以下要素是否缺失或不完整：
+   - 如果世界观为空（"未设定"或0条），必须添加 update_world 步骤来根据现有章节内容提取、补全世界观
+   - 如果角色为空（0个）或角色数量明显少于章节内容中出场角色，必须添加 update_character 步骤来从现有章节中提取和创建角色
+   - 如果剧情线为空（0条），必须添加 update_plotline 步骤来从现有章节中梳理剧情线
+   - 如果伏笔为空（0条），必须添加 update_foreshadowing 步骤来从现有章节中提取和创建伏笔
+   - 如果章纲/大纲为空或不含即将编写的章节大纲，必须添加 create_outline 步骤
+3. 如果用户要求编写新章节，必须在 write_chapter 之前安排 create_outline 步骤来编写该章节的章纲
+4. 【后置同步规则——内外在自洽】如果计划中包含 write_chapter，其后必须安排一个 sync_internals 步骤。此步骤会根据新写章节内容反向更新内在设定（角色状态、剧情线进展、伏笔植入/回收、章纲标注），确保内外在始终一致。
+5. 最后一步推荐为 consistency_check 做一致性验证
+6. 每步需有具体目标，不能过于笼统
+7. 每一步都会让用户确认后才执行，所以请大胆分解
+8. 【纯补全模式】如果用户只是要求补全/填补设定（世界观、角色、大纲、伏笔等）而没有要求写新章节，则不需要 write_chapter 和 sync_internals 步骤，只需要 read + 对应的 update_* / create_outline 步骤 + consistency_check
+
+你的输出必须严格为以下 JSON 格式，不要添加任何 markdown 标记或额外文字:
+[
+  {
+    "id": "step_1",
+    "title": "步骤标题（10字以内）",
+    "description": "详细描述这一步要做什么（1-2句话）",
+    "type": "read|update_world|update_character|update_plotline|update_foreshadowing|create_outline|write_chapter|consistency_check"
+  }
+]
+
+type 说明:
+- read: 阅读并综合分析现有内容
+- update_world: 更新世界观设定（若缺失则从章节内容中提取补全）
+- update_character: 创建/更新角色信息（若缺失则从章节内容中提取补全）
+- update_plotline: 创建/更新剧情线（若缺失则从章节内容中梳理补全）
+- update_foreshadowing: 处理伏笔（植入/回收）
+- create_outline: 编写/更新章节大纲/章纲（会保存到数据库，写新章前必须先有章纲）
+- write_chapter: 编写章节正文（会创建新章节）
+- sync_internals: 写完章节后同步内在设定（根据新章节内容更新角色状态、剧情线进展、标注伏笔、更新章纲完成状态）
+- consistency_check: 一致性检查
+
+【典型步骤顺序】read → update_world → update_character → update_plotline → create_outline → write_chapter → sync_internals → consistency_check
+缺少的内在要素才需要补全步骤，已有的可跳过。write_chapter 后的 sync_internals 不可省略。`;
+
+    let steps: Array<{ id: string; title: string; description: string; type: string }> = [];
+
+    // ---- 判断是规划模式还是执行模式 ----
+    if (approvedSteps?.length) {
+      // 执行模式：用户已确认计划，直接执行
+      steps = approvedSteps;
+      onEvent({ type: 'phase', data: { phase: 'executing', message: '开始执行已确认的步骤...' } });
+      onEvent({ type: 'step_plan', data: { steps } });
+    } else {
+      // 规划模式：AI 分解任务
+      try {
+        const planRaw = await this.streamCallAgent(
+          AgentType.PLANNER,
+          `请分解以下创作请求为多步执行计划:\n\n「${message}」`,
+          0.4,
+          { maxTokens: 1500, timeoutMs: 60000, systemPrompt: planSystemPrompt, useFastModel: true },
+          (_chunk) => {
+            // content 是 JSON 输出，不推送给用户（仅内部累积）
+          },
+          (thinkChunk) => {
+            // 仅推送 reasoning_content 作为思考过程
+            onEvent({ type: 'plan_thinking', data: { text: thinkChunk } });
+          },
+        );
+
+        // 提取 JSON
+        const jsonMatch = planRaw.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          steps = JSON.parse(jsonMatch[0]);
+        }
+      } catch (err: any) {
+        this.logger.error(`[Orchestrate] 任务分解失败: ${err.message}`);
+        onEvent({ type: 'error', data: { message: `任务分解失败: ${err.message}` } });
+        return;
+      }
+
+      if (!steps.length) {
+        onEvent({ type: 'error', data: { message: '无法分解任务，请尝试更明确的描述' } });
+        return;
+      }
+
+      // 推送任务计划并等待用户确认
+      onEvent({ type: 'step_plan', data: { steps } });
+      onEvent({ type: 'await_approval', data: { steps, message: '请确认执行计划后开始执行' } });
+      return;  // 停止，等待用户确认后再次调用
+    }
+
+    // 3. Phase 2 — 逐步执行，每步包含思考+结果
+    const executionContext: Record<string, any> = {
+      bookId,
+      chapterId,
+      currentContent,
+      allChapters,
+      context,
+      worldDetail,
+      characterDetails,
+      plotlineDetail,
+      foreshadowingDetail,
+      outlineDetail,
+      chaptersOverview,
+      chapterContents,
+      accumulatedInsights: '',   // 前序步骤的累积发现
+      createdIds: { characters: [] as string[], plotLines: [] as string[], foreshadowings: [] as string[], chapters: [] as string[], outlines: [] as string[] },
+      updatedElements: [] as string[],
+    };
+
+    for (let i = 0; i < steps.length; i++) {
+      const step = steps[i];
+
+      // 推送步骤开始
+      onEvent({ type: 'step_start', data: { stepId: step.id, stepIndex: i, title: step.title, description: step.description, type: step.type } });
+
+      try {
+        await this.executeOrchestrationStep(
+          step,
+          i,
+          steps,
+          executionContext,
+          onEvent,
+          modelId,
+          message,
+        );
+
+        onEvent({ type: 'step_done', data: { stepId: step.id, stepIndex: i, success: true } });
+      } catch (err: any) {
+        this.logger.error(`[Orchestrate] 步骤 ${step.id} 执行失败: ${err.message}`);
+        onEvent({ type: 'step_done', data: { stepId: step.id, stepIndex: i, success: false, message: err.message } });
+        // 继续执行后续步骤而不中断
+      }
+    }
+
+    // 4. 全部完成
+    const duration = Date.now() - startTime;
+    onEvent({ type: 'done', data: {
+      summary: `多步编排完成，共 ${steps.length} 步，耗时 ${Math.round(duration / 1000)}s`,
+      createdIds: executionContext.createdIds,
+      updatedElements: executionContext.updatedElements,
+    } });
+
+    // 记录日志
+    await this.logSession(
+      bookId,
+      chapterId,
+      'ORCHESTRATE',
+      JSON.stringify({ message, steps: steps.length }),
+      JSON.stringify({ createdIds: executionContext.createdIds, updatedElements: executionContext.updatedElements }),
+      'COMPLETED',
+      duration,
+    );
+  }
+
+  /**
+   * 执行单个编排步骤 — 思考 + 执行 + 结果
+   */
+  private async executeOrchestrationStep(
+    step: { id: string; title: string; description: string; type: string },
+    stepIndex: number,
+    allSteps: Array<{ id: string; title: string; description: string; type: string }>,
+    ctx: Record<string, any>,
+    onEvent: (event: { type: string; data: any }) => void,
+    modelId?: string,
+    userMessage?: string,
+  ): Promise<void> {
+    const stepsContext = allSteps.map((s, i) =>
+      `${i + 1}. [${i < stepIndex ? '✅已完成' : i === stepIndex ? '▶当前' : '⏳待执行'}] ${s.title}: ${s.description}`
+    ).join('\n');
+
+    const baseContext = `
+══════ 书籍状态 ══════
+📚 世界观: ${ctx.worldDetail}
+👥 角色: ${ctx.characterDetails}
+📖 剧情线: ${ctx.plotlineDetail}
+🔮 伏笔: ${ctx.foreshadowingDetail}
+� 章纲/大纲: ${ctx.outlineDetail || '无'}
+�📋 章节: ${ctx.chaptersOverview}
+${ctx.accumulatedInsights ? `\n══════ 前序步骤的发现 ══════\n${ctx.accumulatedInsights}` : ''}
+
+══════ 执行计划 ══════
+${stepsContext}
+
+用户原始请求: 「${userMessage}」
+当前执行: 第${stepIndex + 1}步 - ${step.title}
+步骤描述: ${step.description}`;
+
+    switch (step.type) {
+      case 'read': {
+        // 阅读并综合分析
+        const readPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【阅读与分析】。
+
+${baseContext}
+
+${ctx.chapterContents ? `══════ 已有章节内容 ══════\n${ctx.chapterContents.slice(0, 8000)}\n` : ''}
+
+请仔细阅读上述所有信息，输出你的分析：
+1. 当前故事发展到什么阶段？关键情节线索？
+2. 各角色的当前状态和发展方向？
+3. 有哪些伏笔待回收？有哪些逻辑需注意？
+4. 针对用户请求，需要特别关注什么？
+5. 对后续步骤的建议（哪些设定需要调整/补充）
+
+要求简洁有条理，不超过500字。`;
+
+        const thinking = await this.streamCallAgent(
+          AgentType.PLANNER,
+          readPrompt,
+          0.4,
+          { maxTokens: 1000, timeoutMs: 60000, systemPrompt: '你是一个专业的小说分析师，负责阅读和梳理故事信息。', useFastModel: true },
+          (chunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: chunk } }); },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        ctx.accumulatedInsights += `\n[阅读分析] ${thinking.slice(0, 600)}`;
+        onEvent({ type: 'step_result', data: { stepId: step.id, summary: thinking } });
+        break;
+      }
+
+      case 'update_world': {
+        const worldPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【更新世界观设定】。
+
+${baseContext}
+
+${ctx.chapterContents ? `══════ 已有章节内容 ══════\n${ctx.chapterContents.slice(0, 6000)}\n` : ''}
+
+请根据用户请求、前序分析和现有章节内容，从中提取并构建完整的世界观设定。
+
+【要求】世界观必须包含以下维度的详细描述：
+1. genre（题材分类）：如修仙、玄幻、科幻、都市等
+2. theme（主题与世界背景）：必须是详尽的多段落描述（至少300字），包含：
+   - 世界整体背景与时代设定
+   - 力量体系/修炼体系/科技体系的详细规则和等级划分
+   - 地理环境/重要地点/势力分布
+   - 社会结构/门派体系/政治格局
+   - 特殊规则/禁忌/世界运行法则
+   - 重要的历史背景和传说
+3. tone（基调/风格）：如热血、暗黑、轻松、严肃等
+
+输出格式（严格 JSON，不要 markdown 标记）:
+{"action":"create或update","genre":"准确的类型","theme":"详尽的世界背景描述（至少300字，包含力量体系、地理、势力、规则等多个方面）","tone":"基调描述","reasoning":"更新理由（1-2句）"}
+
+如果不需要修改，输出: {"action":"skip","reasoning":"原因"}
+
+【重要】theme 字段是世界观的核心，必须非常详细，涵盖上述所有维度。不要只写简单的一句话概括。`;
+
+        const worldThinking = await this.streamCallAgent(
+          AgentType.PLANNER,
+          worldPrompt,
+          0.5,
+          { maxTokens: 800, timeoutMs: 60000, systemPrompt: '你是一个世界观设计专家。只输出 JSON。', useFastModel: true },
+          (_chunk) => { /* JSON 输出不推送 */ },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        try {
+          const jsonMatch = worldThinking.match(/\{[\s\S]*\}/);
+          if (jsonMatch) {
+            const data = JSON.parse(jsonMatch[0]);
+            if (data.action === 'skip') {
+              onEvent({ type: 'step_result', data: { stepId: step.id, summary: `世界观保持不变: ${data.reasoning}` } });
+            } else {
+              const existingWs = (ctx.context.worldSettings || [])[0];
+              if (existingWs) {
+                await this.plannerService.updateWorldSetting(existingWs.id, {
+                  ...(data.genre ? { genre: data.genre } : {}),
+                  ...(data.theme ? { theme: data.theme } : {}),
+                  ...(data.tone ? { tone: data.tone } : {}),
+                });
+                ctx.updatedElements.push(`世界观已更新`);
+                onEvent({ type: 'step_result', data: { stepId: step.id, summary: `世界观已更新: ${data.reasoning}`, updated: true } });
+              } else {
+                const ws = await this.plannerService.createWorldSetting(ctx.bookId, {
+                  genre: data.genre || '', theme: data.theme || '', tone: data.tone || '',
+                });
+                ctx.updatedElements.push(`世界观已创建`);
+                onEvent({ type: 'step_result', data: { stepId: step.id, summary: `世界观已创建: ${data.genre} ${data.theme}`, created: true } });
+              }
+              this.invalidateContextCache(ctx.bookId);
+            }
+          }
+        } catch { onEvent({ type: 'step_result', data: { stepId: step.id, summary: worldThinking } }); }
+        ctx.accumulatedInsights += `\n[世界观] ${worldThinking.slice(0, 200)}`;
+        break;
+      }
+
+      case 'update_character': {
+        const charPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【更新角色设定】。
+
+${baseContext}
+
+${ctx.chapterContents ? `══════ 已有章节内容 ══════\n${ctx.chapterContents.slice(0, 6000)}\n` : ''}
+
+请根据用户请求、前序分析和现有章节内容，全面提取并构建角色设定。
+
+【要求】每个角色必须包含以下维度的详细信息：
+1. name: 角色名字
+2. role: protagonist(主角)/antagonist(反派)/supporting(配角)
+3. personality: 详细的性格描述（至少50字），包括核心性格特质、处事风格、情感表达方式
+4. background: 完整的背景故事（至少80字），包括出身、经历、与其他角色的历史关系
+5. goal: 当前目标（当前阶段角色想达成什么）
+6. longTermGoal: 长期/终极目标
+7. motivation: 核心驱动力（为什么追求这个目标）
+8. strength: 优势/能力描述（包括战斗能力、特殊技能、性格优势等）
+9. weakness: 弱点/短板（包括性格缺陷、能力限制、致命弱点）
+10. fear: 恐惧/忌讳（角色最害怕什么、回避什么）
+11. appearance: 外貌特征描述（身材、面容、标志性特征等）
+12. arc: 成长弧线（角色从开始到现在的变化轨迹，或预期发展方向）
+
+输出格式（严格 JSON 数组，不要 markdown 标记）:
+[{"action":"create或update或skip","name":"角色名","role":"protagonist/antagonist/supporting","personality":"详细性格描述","background":"完整背景故事","goal":"当前目标","longTermGoal":"长期目标","motivation":"核心驱动力","strength":"优势能力","weakness":"弱点短板","fear":"恐惧忌讳","appearance":"外貌描述","arc":"成长弧线","reasoning":"操作理由"}]
+
+不需要修改的角色不要列出。如果完全不需要角色操作，输出空数组: []
+【重要】每个字段都必须有实质性内容，不要留空或只写简单几个字。从章节内容中提取具体细节。`;
+
+        const charThinking = await this.streamCallAgent(
+          AgentType.CHARACTER,
+          charPrompt,
+          0.5,
+          { maxTokens: 1500, timeoutMs: 60000, systemPrompt: '你是一个角色设计专家。只输出 JSON。', useFastModel: true },
+          (_chunk) => { /* JSON 输出不推送 */ },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        try {
+          const jsonMatch = charThinking.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const charOps = JSON.parse(jsonMatch[0]);
+            for (const op of charOps) {
+              if (op.action === 'skip') continue;
+              if (op.action === 'create') {
+                const char = await this.prisma.character.create({
+                  data: { bookId: ctx.bookId, name: op.name, role: op.role || 'supporting', bio: `${op.personality || ''}\n${op.background || ''}` },
+                });
+                await this.characterService.upsertCharacterProfile(char.id, {
+                  personality: op.personality || '',
+                  background: op.background || '',
+                  currentGoal: op.goal || '',
+                  longTermGoal: op.longTermGoal || '',
+                  motivation: op.motivation || '',
+                  strength: op.strength || '',
+                  weakness: op.weakness || '',
+                  fear: op.fear || '',
+                  appearance: op.appearance || '',
+                  arc: op.arc || '',
+                });
+                ctx.createdIds.characters.push(char.id);
+                ctx.updatedElements.push(`角色「${op.name}」已创建`);
+              } else if (op.action === 'update') {
+                const existing = (ctx.context.characters || []).find((c: any) => c.name === op.name);
+                if (existing?.profile || existing) {
+                  await this.characterService.upsertCharacterProfile(existing.id, {
+                    ...(op.personality ? { personality: op.personality } : {}),
+                    ...(op.background ? { background: op.background } : {}),
+                    ...(op.goal ? { currentGoal: op.goal } : {}),
+                    ...(op.longTermGoal ? { longTermGoal: op.longTermGoal } : {}),
+                    ...(op.motivation ? { motivation: op.motivation } : {}),
+                    ...(op.strength ? { strength: op.strength } : {}),
+                    ...(op.weakness ? { weakness: op.weakness } : {}),
+                    ...(op.fear ? { fear: op.fear } : {}),
+                    ...(op.appearance ? { appearance: op.appearance } : {}),
+                    ...(op.arc ? { arc: op.arc } : {}),
+                  });
+                  ctx.updatedElements.push(`角色「${op.name}」已更新`);
+                }
+              }
+            }
+            this.invalidateContextCache(ctx.bookId);
+            const summary = charOps.filter((o: any) => o.action !== 'skip')
+              .map((o: any) => `${o.action === 'create' ? '创建' : '更新'}「${o.name}」: ${o.reasoning}`)
+              .join('\n') || '无需角色变更';
+            onEvent({ type: 'step_result', data: { stepId: step.id, summary } });
+          }
+        } catch { onEvent({ type: 'step_result', data: { stepId: step.id, summary: charThinking } }); }
+        ctx.accumulatedInsights += `\n[角色] ${charThinking.slice(0, 200)}`;
+        break;
+      }
+
+      case 'update_plotline': {
+        const plotPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【更新剧情线】。
+
+${baseContext}
+
+${ctx.chapterContents ? `══════ 已有章节内容 ══════\n${ctx.chapterContents.slice(0, 6000)}\n` : ''}
+
+请根据用户请求、前序分析和现有章节内容，全面梳理并构建剧情线。
+
+【要求】每条剧情线必须包含以下详细信息：
+1. title: 剧情线标题（简洁有力，体现核心冲突）
+2. type: MAIN(主线)/SUB(副线)/HIDDEN(暗线)
+3. description: 详细描述（至少100字），必须包含：
+   - 剧情线的核心冲突和驱动力
+   - 当前进展阶段（已发生的关键事件）
+   - 涉及的主要角色及其立场
+   - 悬念和未解之谜
+   - 预期发展方向
+   - 与其他剧情线的关联
+
+输出格式（严格 JSON 数组）:
+[{"action":"create或update或skip","title":"剧情线标题","type":"MAIN或SUB或HIDDEN","description":"详细描述（至少100字）","reasoning":"操作理由"}]
+
+输出空数组表示无需操作: []
+【重要】description 必须详细，要体现剧情的发展脉络，不要只写简单的一句话。`;
+
+        const plotThinking = await this.streamCallAgent(
+          AgentType.PLANNER,
+          plotPrompt,
+          0.5,
+          { maxTokens: 1000, timeoutMs: 60000, systemPrompt: '你是一个剧情线设计专家。只输出 JSON。', useFastModel: true },
+          (_chunk) => { /* JSON 输出不推送 */ },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        try {
+          const jsonMatch = plotThinking.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const plotOps = JSON.parse(jsonMatch[0]);
+            for (const op of plotOps) {
+              if (op.action === 'skip') continue;
+              if (op.action === 'create') {
+                const pl = await this.plannerService.createPlotLine(ctx.bookId, {
+                  title: op.title, description: op.description, type: op.type || 'MAIN',
+                });
+                ctx.createdIds.plotLines.push(pl.id);
+                ctx.updatedElements.push(`剧情线「${op.title}」已创建`);
+              } else if (op.action === 'update') {
+                const existing = (ctx.context.plotLines || []).find((p: any) => p.title === op.title);
+                if (existing) {
+                  await this.plannerService.updatePlotLine(existing.id, { description: op.description });
+                  ctx.updatedElements.push(`剧情线「${op.title}」已更新`);
+                }
+              }
+            }
+            this.invalidateContextCache(ctx.bookId);
+            const summary = plotOps.filter((o: any) => o.action !== 'skip')
+              .map((o: any) => `${o.action === 'create' ? '创建' : '更新'}「${o.title}」`)
+              .join('\n') || '无需剧情线变更';
+            onEvent({ type: 'step_result', data: { stepId: step.id, summary } });
+          }
+        } catch { onEvent({ type: 'step_result', data: { stepId: step.id, summary: plotThinking } }); }
+        ctx.accumulatedInsights += `\n[剧情线] ${plotThinking.slice(0, 200)}`;
+        break;
+      }
+
+      case 'update_foreshadowing': {
+        const fsPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【处理伏笔】。
+
+${baseContext}
+
+${ctx.chapterContents ? `══════ 已有章节内容 ══════\n${ctx.chapterContents.slice(0, 6000)}\n` : ''}
+
+请根据用户请求、前序分析和现有章节内容，全面提取和管理伏笔。
+
+【要求】每个伏笔必须包含完整信息：
+1. title: 伏笔名称（简洁有力）
+2. content: 详细描述（至少80字），包含：
+   - 伏笔在原文中的具体表现/暗示内容
+   - 伏笔指向的可能真相或后续发展
+   - 埋设在哪个章节/场景
+   - 预期何时/如何回收
+   - 与其他伏笔或剧情线的关联
+
+输出格式（严格 JSON 数组）:
+[{"action":"create或resolve或skip","title":"伏笔标题","content":"详细伏笔内容描述（至少80字）","reasoning":"操作理由"}]
+
+输出空数组表示无需操作: []
+【重要】content 必须详细，要包含伏笔的来龙去脉，不要只写一句话概括。`;
+
+        const fsThinking = await this.streamCallAgent(
+          AgentType.PLANNER,
+          fsPrompt,
+          0.5,
+          { maxTokens: 1000, timeoutMs: 60000, systemPrompt: '你是一个伏笔设计专家。只输出 JSON。', useFastModel: true },
+          (_chunk) => { /* JSON 输出不推送 */ },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        try {
+          const jsonMatch = fsThinking.match(/\[[\s\S]*\]/);
+          if (jsonMatch) {
+            const fsOps = JSON.parse(jsonMatch[0]);
+            for (const op of fsOps) {
+              if (op.action === 'skip') continue;
+              if (op.action === 'create') {
+                const created = await this.plannerService.createForeshadowing(ctx.bookId, {
+                  title: op.title, content: op.content,
+                });
+                ctx.createdIds.foreshadowings.push(created.id);
+                ctx.updatedElements.push(`伏笔「${op.title}」已植入`);
+              } else if (op.action === 'resolve') {
+                const existing = (ctx.context.foreshadowings || []).find((f: any) => f.title === op.title);
+                if (existing) {
+                  await this.plannerService.resolveForeshadowing(existing.id, op.content);
+                  ctx.updatedElements.push(`伏笔「${op.title}」已回收`);
+                }
+              }
+            }
+            this.invalidateContextCache(ctx.bookId);
+            const summary = fsOps.filter((o: any) => o.action !== 'skip')
+              .map((o: any) => `${o.action === 'create' ? '植入' : '回收'}「${o.title}」`)
+              .join('\n') || '无需伏笔变更';
+            onEvent({ type: 'step_result', data: { stepId: step.id, summary } });
+          }
+        } catch { onEvent({ type: 'step_result', data: { stepId: step.id, summary: fsThinking } }); }
+        ctx.accumulatedInsights += `\n[伏笔] ${fsThinking.slice(0, 200)}`;
+        break;
+      }
+
+      case 'create_outline': {
+        // 获取已有章节内容以便AI参考
+        let existingChapterText = ctx.chapterContents || '';
+        if (!existingChapterText) {
+          const chaps = await this.prisma.chapter.findMany({
+            where: { bookId: ctx.bookId },
+            orderBy: { order: 'asc' },
+            select: { title: true, content: true, order: true },
+          });
+          existingChapterText = chaps
+            .filter((c: any) => c.content)
+            .map((c: any) => {
+              const text = (c.content as string).replace(/<[^>]+>/g, '');
+              return `【第${c.order}章 ${c.title}】\n${text.slice(0, 1500)}`;
+            })
+            .join('\n\n');
+        }
+
+        const outlinePrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【编写章节大纲/章纲】。
+
+${baseContext}
+
+${existingChapterText ? `══════ 已有章节内容摘要 ══════\n${existingChapterText.slice(0, 5000)}\n` : ''}
+
+请为需要编写的章节构思详细的章纲（大纲），包含：
+1. 章节标题（格式：第N章 标题）
+2. 三幕式结构（起-承-转-合）
+3. 主要场景和关键事件描述
+4. 涉及的角色及其行为/对话要点
+5. 情绪起伏曲线和节奏安排
+6. 核心冲突与冲突解决
+7. 需要呼应的伏笔和需要植入的新伏笔
+8. 与前后章节的衔接点
+9. 本章结尾悬念/钩子
+
+【重要】你必须只输出一个 JSON 对象或 JSON 数组，不要输出任何其他文字、markdown 标记或代码块。
+
+单章格式: {"title":"第N章 标题","content":"详细章纲（包含三幕结构、场景、角色行为、冲突点、伏笔、结尾悬念等，至少300字）"}
+多章格式: [{"title":"第N章 标题","content":"..."},{"title":"第M章 标题","content":"..."}]`;
+
+        const outlineThinking = await this.streamCallAgent(
+          AgentType.PLANNER,
+          outlinePrompt,
+          0.7,
+          { maxTokens: 2500, timeoutMs: 90000, systemPrompt: '你是一个资深小说策划，擅长构建引人入胜的章节大纲。只输出纯 JSON，不要任何 markdown 代码块标记。', modelOverride: modelId },
+          (_chunk) => { /* JSON 输出不推送 */ },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        // 解析并持久化章纲到数据库
+        let outlineSummary = outlineThinking;
+        try {
+          // 去除可能的 markdown 代码块标记
+          const cleaned = outlineThinking.replace(/```(?:json)?\s*/gi, '').replace(/```\s*/g, '').trim();
+          const arrMatch = cleaned.match(/\[\s*\{[\s\S]*\}\s*\]/);
+          const objMatch = cleaned.match(/\{[\s\S]*\}/);
+          const outlineItems: Array<{ title: string; content: string }> = arrMatch
+            ? JSON.parse(arrMatch[0])
+            : objMatch ? [JSON.parse(objMatch[0])] : [];
+
+          const summaryParts: string[] = [];
+          for (const item of outlineItems) {
+            // 查找是否已有同名大纲
+            const existing = await this.prisma.outline.findFirst({
+              where: { bookId: ctx.bookId, title: item.title },
+            });
+            if (existing) {
+              await this.prisma.outline.update({
+                where: { id: existing.id },
+                data: { content: item.content },
+              });
+              ctx.updatedElements.push(`章纲「${item.title}」已更新`);
+              summaryParts.push(`更新章纲「${item.title}」`);
+            } else {
+              const maxOrder = await this.prisma.outline.aggregate({
+                where: { bookId: ctx.bookId },
+                _max: { order: true },
+              });
+              await this.prisma.outline.create({
+                data: {
+                  bookId: ctx.bookId,
+                  title: item.title,
+                  content: item.content,
+                  order: (maxOrder._max.order || 0) + 1,
+                },
+              });
+              ctx.updatedElements.push(`章纲「${item.title}」已创建`);
+              summaryParts.push(`创建章纲「${item.title}」`);
+            }
+            // 缓存章纲内容用于后续写作步骤
+            ctx.chapterOutline = (ctx.chapterOutline || '') + `\n【${item.title}】\n${item.content}`;
+          }
+          this.invalidateContextCache(ctx.bookId);
+          outlineSummary = summaryParts.join('\n') + '\n\n' + outlineItems.map(i => `【${i.title}】\n${i.content}`).join('\n\n');
+        } catch {
+          // JSON 解析失败，尝试以纯文本方式保存
+          const titleMatch = step.description.match(/第[\d一二三四五六七八九十百]+章/) || step.title.match(/第[\d一二三四五六七八九十百]+章/);
+          const outlineTitle = titleMatch ? `${titleMatch[0]} 章纲` : `章纲 - ${step.title}`;
+          const maxOrder = await this.prisma.outline.aggregate({
+            where: { bookId: ctx.bookId },
+            _max: { order: true },
+          });
+          await this.prisma.outline.create({
+            data: {
+              bookId: ctx.bookId,
+              title: outlineTitle,
+              content: outlineThinking,
+              order: (maxOrder._max.order || 0) + 1,
+            },
+          });
+          ctx.updatedElements.push(`章纲「${outlineTitle}」已创建`);
+          ctx.chapterOutline = outlineThinking;
+          this.invalidateContextCache(ctx.bookId);
+        }
+
+        ctx.accumulatedInsights += `\n[章纲] ${outlineSummary.slice(0, 400)}`;
+        onEvent({ type: 'step_result', data: { stepId: step.id, summary: outlineSummary } });
+        break;
+      }
+
+      case 'write_chapter': {
+        // 刷新上下文以获取最新信息
+        this.invalidateContextCache(ctx.bookId);
+        const freshContext = await this.loadContext(ctx.bookId, ctx.chapterId);
+
+        const recentChapters = ctx.allChapters
+          .filter((c: any) => c.content && c.content.length > 0)
+          .slice(-3)
+          .map((c: any) => `【第${c.order}章 ${c.title}】\n${typeof c.content === 'string' ? c.content.slice(-2000) : ''}`)
+          .join('\n\n---\n\n');
+
+        const writePrompt = `你正在执行多步创作流程的最终步骤：【编写章节正文】。
+
+${baseContext}
+
+${ctx.chapterOutline ? `══════ 本章章纲 ══════\n${ctx.chapterOutline}\n` : ''}
+${recentChapters ? `══════ 近几章内容（用于衔接） ══════\n${recentChapters}\n` : ''}
+
+══════ 写作要求 ══════
+1. 严格按照章纲编写，确保所有设定一致
+2. 注意与前文的衔接，语言风格保持一致
+3. 角色言行符合其性格设定
+4. 适当呼应已有伏笔，植入新的悬念
+5. 注意节奏张弛，场景切换自然
+6. 字数要求：2000-4000字
+
+【重要】直接输出小说正文，不要输出任何思考过程、分析、标记或元信息。不要以"用户让我"、"根据要求"等开头。第一个字就是小说正文内容。`;
+
+        let chapterText = '';
+        await this.streamCallAgent(
+          AgentType.WRITER,
+          writePrompt,
+          0.75,
+          { maxTokens: 6000, timeoutMs: 180000, systemPrompt: '你是一个资深网络小说作家，文笔流畅，擅长叙事和对话描写。你只输出小说正文，绝不输出任何分析、思考或元描述。', modelOverride: modelId },
+          (chunk) => {
+            chapterText += chunk;
+            onEvent({ type: 'step_thinking', data: { stepId: step.id, text: chunk } });
+          },
+          (thinkChunk) => {
+            // reasoning_content 仅展示给用户，不计入章节内容
+            onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } });
+          },
+        );
+
+        // 清理内容：去除可能混入的 <think> 标签和 AI 元描述
+        chapterText = chapterText
+          .replace(/<think>[\s\S]*?<\/think>/g, '')
+          .replace(/^(用户|根据用户|以下是|下面是|让我|好的|收到)[\s\S]*?\n\n/i, '')
+          .trim();
+
+        // 始终创建新章节（不覆盖当前编辑的章节）
+        // 重新查询最新章节列表以获取正确的章节数
+        const latestChapters = await this.prisma.chapter.findMany({
+          where: { bookId: ctx.bookId },
+          orderBy: { order: 'asc' },
+          select: { id: true, title: true, order: true },
+        });
+        const nextOrder = latestChapters.length > 0
+          ? Math.max(...latestChapters.map((c: any) => c.order)) + 1
+          : 1;
+
+        // 从步骤标题提取章节标题
+        let chapterTitle = `第${nextOrder}章`;
+        const titleMatch = step.title.match(/第[\d一二三四五六七八九十百]+章/);
+        if (titleMatch) {
+          chapterTitle = titleMatch[0];
+        } else if (step.description) {
+          const descMatch = step.description.match(/第[\d一二三四五六七八九十百]+章/);
+          if (descMatch) chapterTitle = descMatch[0];
+        }
+
+        // 转换为 HTML 格式，确保编辑器能正确渲染分段
+        const chapterHtml = this.plainTextToHtml(chapterText);
+
+        const chapter = await this.prisma.chapter.create({
+          data: {
+            bookId: ctx.bookId,
+            title: chapterTitle,
+            content: chapterHtml,
+            order: nextOrder,
+            status: 'DRAFT',
+            wordCount: chapterText.length,
+          },
+        });
+        ctx.createdIds.chapters.push(chapter.id);
+        ctx.updatedElements.push(`新章节「${chapterTitle}」已创建 (${chapterText.length}字)`);
+
+        // 缓存新章节内容供 sync_internals 步骤使用
+        ctx.newChapterContent = chapterText;
+        ctx.newChapterTitle = chapterTitle;
+        ctx.newChapterId = chapter.id;
+
+        onEvent({ type: 'step_result', data: {
+          stepId: step.id,
+          summary: `新章节「${chapterTitle}」已创建 (${chapterText.length}字)`,
+          content: chapterText,
+          wordCount: chapterText.length,
+        } });
+        break;
+      }
+
+      case 'sync_internals': {
+        // 写完章节后反向同步内在设定：角色状态、剧情线进展、伏笔、章纲标注
+        this.invalidateContextCache(ctx.bookId);
+        const freshCtx = await this.loadContext(ctx.bookId);
+
+        const chapterContent = ctx.newChapterContent || '';
+        const chapterTitle = ctx.newChapterTitle || '';
+
+        if (!chapterContent) {
+          onEvent({ type: 'step_result', data: { stepId: step.id, summary: '无新章节内容，跳过内在同步' } });
+          break;
+        }
+
+        // 当角色/伏笔/章纲为空时，需要扫描所有章节内容来提取
+        const needFullScan = (freshCtx.characters || []).length === 0
+          || (freshCtx.foreshadowings || []).length === 0
+          || (freshCtx.outlines || []).length === 0;
+        let allChapterTexts = '';
+        if (needFullScan) {
+          const allChaps = await this.prisma.chapter.findMany({
+            where: { bookId: ctx.bookId },
+            orderBy: { order: 'asc' },
+            select: { title: true, content: true, order: true },
+          });
+          allChapterTexts = allChaps
+            .filter((c: any) => c.content)
+            .map((c: any) => {
+              // 去除 HTML 标签提取纯文本
+              const text = (c.content as string).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+              return `【第${c.order}章 ${c.title}】\n${text.slice(0, 2000)}`;
+            })
+            .join('\n\n');
+        }
+
+        // 获取当前所有内在设定的精简信息
+        const existingChars = (freshCtx.characters || []).map((c: any) => {
+          const p = c.profile;
+          return `${c.name} (${c.id}) [${p?.role || c.role || 'supporting'}]: ${p?.personality || ''} | 目标: ${p?.currentGoal || '未设定'}`;
+        }).join('\n') || '无';
+        const existingPlots = (freshCtx.plotLines || []).map((p: any) =>
+          `${p.title} (${p.id}) [${p.type}]: ${(p.description || '').slice(0, 100)}`
+        ).join('\n') || '无';
+        const existingFs = (freshCtx.foreshadowings || []).map((f: any) =>
+          `${f.title} (${f.id}) [${f.status}]: ${(f.content || '').slice(0, 80)}`
+        ).join('\n') || '无';
+        const existingOutlines = (freshCtx.outlines || []).map((o: any) =>
+          `${o.title} (${o.id}): ${(o.content || '').slice(0, 80)}`
+        ).join('\n') || '无';
+        const ws0 = (freshCtx.worldSettings || [])[0] as any;
+        const worldInfo = ws0 ? `${ws0.genre || ''} | ${ws0.theme || ''} | ${ws0.tone || ''}` : '未设定';
+
+        const syncPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【内在设定同步】。
+
+新写的章节「${chapterTitle}」内容如下：
+---
+${chapterContent.slice(0, 6000)}
+---
+${allChapterTexts ? `\n══════ 全部章节内容（用于提取缺失的角色/伏笔） ══════\n${allChapterTexts.slice(0, 12000)}\n` : ''}
+
+══════ 当前内在设定 ══════
+📚 世界观: ${worldInfo}
+👥 角色:
+${existingChars}
+📖 剧情线:
+${existingPlots}
+🔮 伏笔 (待回收):
+${existingFs}
+📝 章纲:
+${existingOutlines}
+
+══════ 任务 ══════
+请根据新章节内容，分析需要同步更新的内在设定。你需要确保内（设定）外（章节内容）完全自洽。
+
+输出严格 JSON（不要 markdown 标记）:
+{
+  "characters": [
+    {"action":"create或update","id":"已有角色的id或null","name":"角色名","updates":{"personality":"更新后的性格","currentGoal":"更新后的当前目标","background":"补充的背景"},"reasoning":"理由"}
+  ],
+  "plotlines": [
+    {"action":"create或update","id":"已有剧情线的id或null","title":"标题","updates":{"description":"更新后的描述/进展"},"reasoning":"理由"}
+  ],
+  "foreshadowings": [
+    {"action":"create或resolve","id":"待回收伏笔的id或null","title":"标题","content":"内容","reasoning":"理由"}
+  ],
+  "outline_update": {"title":"${chapterTitle}","summary":"本章实际内容概要（2-3句话）"},
+  "world_update": null 或 {"genre":"","theme":"补充","tone":""}
+}
+
+规则：
+1. 【重要】当角色为0个时，必须从所有章节内容中提取所有出场角色并 create（主角、重要配角、关键路人都要提取）
+2. 当角色>0时，新出场角色 create，已有角色若有发展则 update
+3. 剧情线若有推进或出现新支线，需 update 或 create
+4. 本章中植入的新伏笔需 create；已呼应的旧伏笔需 resolve
+5. 章纲 outline_update 需反映实际写了什么（用于对照计划和结果）
+6. 世界观若本章揭示了新设定（如新地点、新势力），world_update 补充
+7. 不需要变更的部分给空数组 [] 或 null
+8. id 字段：更新已有元素时必须填对应的 id，新建时填 null
+9. 即使角色很多，也要全部列出 create——宁多勿漏`;
+
+        const syncThinking = await this.streamCallAgent(
+          AgentType.PLANNER,
+          syncPrompt,
+          0.4,
+          { maxTokens: 2000, timeoutMs: 90000, systemPrompt: '你是一个专业的小说设定管理员，负责保持故事设定与章节内容的一致性。只输出 JSON。', useFastModel: true },
+          (_chunk) => { /* JSON 输出不推送 */ },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        const syncResults: string[] = [];
+        try {
+          const jsonMatch = syncThinking.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) throw new Error('No JSON found');
+          const syncData = JSON.parse(jsonMatch[0]);
+
+          // 1. 同步角色
+          if (syncData.characters?.length) {
+            for (const ch of syncData.characters) {
+              if (ch.action === 'create' && ch.name) {
+                const char = await this.prisma.character.create({
+                  data: { bookId: ctx.bookId, name: ch.name, role: ch.updates?.role || 'supporting', bio: ch.updates?.personality || '' },
+                });
+                await this.characterService.upsertCharacterProfile(char.id, {
+                  personality: ch.updates?.personality || '',
+                  background: ch.updates?.background || '',
+                  currentGoal: ch.updates?.currentGoal || '',
+                  strength: ch.updates?.strength || '',
+                  weakness: ch.updates?.weakness || '',
+                });
+                ctx.createdIds.characters.push(char.id);
+                syncResults.push(`角色「${ch.name}」已从章节中提取并创建`);
+              } else if (ch.action === 'update' && ch.id) {
+                const updates: Record<string, string> = {};
+                if (ch.updates?.personality) updates.personality = ch.updates.personality;
+                if (ch.updates?.currentGoal) updates.currentGoal = ch.updates.currentGoal;
+                if (ch.updates?.background) updates.background = ch.updates.background;
+                if (ch.updates?.strength) updates.strength = ch.updates.strength;
+                if (ch.updates?.weakness) updates.weakness = ch.updates.weakness;
+                if (Object.keys(updates).length > 0) {
+                  await this.characterService.upsertCharacterProfile(ch.id, updates);
+                  syncResults.push(`角色「${ch.name}」状态已更新: ${ch.reasoning || ''}`);
+                }
+              }
+            }
+          }
+
+          // 2. 同步剧情线
+          if (syncData.plotlines?.length) {
+            for (const pl of syncData.plotlines) {
+              if (pl.action === 'create' && pl.title) {
+                const created = await this.plannerService.createPlotLine(ctx.bookId, {
+                  title: pl.title, description: pl.updates?.description || '', type: pl.updates?.type || 'SUB',
+                });
+                ctx.createdIds.plotLines.push(created.id);
+                syncResults.push(`剧情线「${pl.title}」已从章节中提取并创建`);
+              } else if (pl.action === 'update' && pl.id) {
+                await this.plannerService.updatePlotLine(pl.id, { description: pl.updates?.description || '' });
+                syncResults.push(`剧情线「${pl.title}」进展已更新`);
+              }
+            }
+          }
+
+          // 3. 同步伏笔
+          if (syncData.foreshadowings?.length) {
+            for (const fs of syncData.foreshadowings) {
+              if (fs.action === 'create' && fs.title) {
+                const created = await this.plannerService.createForeshadowing(ctx.bookId, {
+                  title: fs.title, content: fs.content || '',
+                });
+                ctx.createdIds.foreshadowings.push(created.id);
+                syncResults.push(`伏笔「${fs.title}」已植入`);
+              } else if (fs.action === 'resolve' && fs.id) {
+                await this.plannerService.resolveForeshadowing(fs.id, fs.content || '');
+                syncResults.push(`伏笔「${fs.title}」已回收`);
+              }
+            }
+          }
+
+          // 4. 同步章纲（标注实际完成内容）
+          if (syncData.outline_update?.title) {
+            const existingOutline = await this.prisma.outline.findFirst({
+              where: { bookId: ctx.bookId, title: { contains: syncData.outline_update.title.replace(/第[\d一二三四五六七八九十百]+章\s*/, '') || syncData.outline_update.title } },
+            });
+            const summaryNote = `\n\n【已完成】${syncData.outline_update.summary || ''}`;
+            if (existingOutline) {
+              await this.prisma.outline.update({
+                where: { id: existingOutline.id },
+                data: { content: (existingOutline.content || '') + summaryNote },
+              });
+              syncResults.push(`章纲「${existingOutline.title}」已标注完成状态`);
+            }
+          }
+
+          // 5. 同步世界观
+          if (syncData.world_update) {
+            const existingWs = (freshCtx.worldSettings || [])[0] as any;
+            if (existingWs) {
+              const wu = syncData.world_update;
+              await this.plannerService.updateWorldSetting(existingWs.id, {
+                ...(wu.theme ? { theme: (existingWs.theme || '') + '\n' + wu.theme } : {}),
+                ...(wu.tone ? { tone: wu.tone } : {}),
+                ...(wu.genre ? { genre: wu.genre } : {}),
+              });
+              syncResults.push(`世界观设定已补充更新`);
+            } else {
+              const wu = syncData.world_update;
+              await this.plannerService.createWorldSetting(ctx.bookId, {
+                genre: wu.genre || '', theme: wu.theme || '', tone: wu.tone || '',
+              });
+              syncResults.push(`世界观设定已创建`);
+            }
+          }
+
+          this.invalidateContextCache(ctx.bookId);
+        } catch (err: any) {
+          this.logger.warn(`[sync_internals] JSON 解析失败: ${err.message}`);
+          syncResults.push(`设定同步分析完成（部分结果）: ${syncThinking.slice(0, 300)}`);
+        }
+
+        const summary = syncResults.length > 0
+          ? `内在设定已同步:\n${syncResults.join('\n')}`
+          : '内在设定无需更新';
+        ctx.accumulatedInsights += `\n[内在同步] ${summary}`;
+        ctx.updatedElements.push(...syncResults);
+        onEvent({ type: 'step_result', data: { stepId: step.id, summary } });
+        break;
+      }
+
+      case 'consistency_check': {
+        const checkPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【一致性检查】。
+
+${baseContext}
+
+${ctx.accumulatedInsights ? `══════ 本次执行的所有变更 ══════\n${ctx.updatedElements.join('\n')}\n` : ''}
+
+请检查以下方面的一致性：
+1. 新生成/修改的内容是否与世界观设定一致？
+2. 角色言行是否符合性格描述？
+3. 时间线是否有矛盾？
+4. 伏笔是否有遗漏或矛盾？
+5. 前后章节是否衔接得当？
+
+输出检查报告，指出发现的问题和建议。简洁清晰，不超过400字。`;
+
+        const checkResult = await this.streamCallAgent(
+          AgentType.CONSISTENCY,
+          checkPrompt,
+          0.3,
+          { maxTokens: 800, timeoutMs: 60000, systemPrompt: '你是一个严谨的内容审核编辑。', useFastModel: true },
+          (chunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: chunk } }); },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        onEvent({ type: 'step_result', data: { stepId: step.id, summary: checkResult } });
+        break;
+      }
+
+      default: {
+        // 通用步骤：让 AI 自由处理
+        const genericPrompt = `你正在执行多步创作流程的第${stepIndex + 1}步：【${step.title}】。
+
+${baseContext}
+
+请执行: ${step.description}
+
+输出你的分析和执行结果。`;
+
+        const result = await this.streamCallAgent(
+          AgentType.WRITER,
+          genericPrompt,
+          0.6,
+          { maxTokens: 1500, timeoutMs: 90000, systemPrompt: '你是一个专业的小说创作助手。', modelOverride: modelId },
+          (chunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: chunk } }); },
+          (thinkChunk) => { onEvent({ type: 'step_thinking', data: { stepId: step.id, text: thinkChunk } }); },
+        );
+
+        ctx.accumulatedInsights += `\n[${step.title}] ${result.slice(0, 200)}`;
+        onEvent({ type: 'step_result', data: { stepId: step.id, summary: result } });
+        break;
+      }
+    }
+  }
+
+  /**
+   * 写完章节后自动同步内在设定（独立接口，供非编排路径使用）
+   * 根据章节内容反向更新角色、剧情线、伏笔、章纲
+   */
+  async syncInternalsAfterWrite(
+    bookId: string,
+    chapterId: string,
+    onEvent?: (event: { type: string; data: any }) => void,
+  ): Promise<{ updates: string[] }> {
+    const chapter = await this.prisma.chapter.findUnique({ where: { id: chapterId } });
+    if (!chapter || !chapter.content) return { updates: [] };
+
+    this.invalidateContextCache(bookId);
+    const context = await this.loadContext(bookId);
+    const updates: string[] = [];
+
+    // 当角色/伏笔为空时，扫描所有章节内容
+    const needFullScan = (context.characters || []).length === 0 || (context.foreshadowings || []).length === 0;
+    let allChapterTexts = '';
+    if (needFullScan) {
+      const allChaps = await this.prisma.chapter.findMany({
+        where: { bookId },
+        orderBy: { order: 'asc' },
+        select: { title: true, content: true, order: true },
+      });
+      allChapterTexts = allChaps
+        .filter((c: any) => c.content)
+        .map((c: any) => {
+          const text = (c.content as string).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+          return `【第${c.order}章 ${c.title}】\n${text.slice(0, 2000)}`;
+        })
+        .join('\n\n');
+    }
+
+    const chapterText = (chapter.content as string).replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+
+    const existingChars = (context.characters || []).map((c: any) => {
+      const p = c.profile;
+      return `${c.name} (${c.id}) [${p?.role || c.role || 'supporting'}]: ${p?.personality || ''} | 目标: ${p?.currentGoal || '未设定'}`;
+    }).join('\n') || '无';
+    const existingPlots = (context.plotLines || []).map((p: any) =>
+      `${p.title} (${p.id}) [${p.type}]: ${(p.description || '').slice(0, 100)}`
+    ).join('\n') || '无';
+    const existingFs = (context.foreshadowings || []).map((f: any) =>
+      `${f.title} (${f.id}) [${f.status}]: ${(f.content || '').slice(0, 80)}`
+    ).join('\n') || '无';
+    const ws0 = (context.worldSettings || [])[0] as any;
+    const worldInfo = ws0 ? `${ws0.genre || ''} | ${ws0.theme || ''} | ${ws0.tone || ''}` : '未设定';
+
+    const syncPrompt = `请分析章节内容，列出需要同步的内在设定。
+
+章节「${chapter.title}」内容：
+---
+${chapterText.slice(0, 6000)}
+---
+${allChapterTexts ? `\n══════ 全部章节内容（用于提取缺失的角色/伏笔） ══════\n${allChapterTexts.slice(0, 10000)}\n` : ''}
+当前内在设定：
+- 世界观: ${worldInfo}
+- 角色 (${(context.characters || []).length}个): ${existingChars}
+- 剧情线: ${existingPlots}
+- 伏笔: ${existingFs}
+
+输出严格 JSON:
+{
+  "characters": [{"action":"create或update","id":"已有id或null","name":"角色名","updates":{"personality":"","currentGoal":"","background":""},"reasoning":""}],
+  "plotlines": [{"action":"create或update","id":"已有id或null","title":"","updates":{"description":""},"reasoning":""}],
+  "foreshadowings": [{"action":"create或resolve","id":"已有id或null","title":"","content":"","reasoning":""}],
+  "world_update": null
+}
+【重要】当角色为0个时，必须从所有章节中提取所有出场角色并 create。不需变更的部分给空数组或null。新建角色时 id 填 null。`;
+
+    try {
+      const syncResult = await this.streamCallAgent(
+        AgentType.PLANNER,
+        syncPrompt,
+        0.4,
+        { maxTokens: 1500, timeoutMs: 60000, systemPrompt: '你是小说设定管理员，保持设定与内容一致。只输出 JSON。', useFastModel: true },
+        (_chunk) => {},
+        (thinkChunk) => { if (onEvent) onEvent({ type: 'thinking_token', data: thinkChunk }); },
+      );
+
+      const jsonMatch = syncResult.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return { updates };
+      const data = JSON.parse(jsonMatch[0]);
+
+      // 同步角色
+      if (data.characters?.length) {
+        for (const ch of data.characters) {
+          if (ch.action === 'create' && ch.name) {
+            const char = await this.prisma.character.create({
+              data: { bookId, name: ch.name, role: ch.updates?.role || 'supporting', bio: ch.updates?.personality || '' },
+            });
+            await this.characterService.upsertCharacterProfile(char.id, {
+              personality: ch.updates?.personality || '',
+              background: ch.updates?.background || '',
+              currentGoal: ch.updates?.currentGoal || '',
+            });
+            updates.push(`角色「${ch.name}」已创建`);
+          } else if (ch.action === 'update' && ch.id) {
+            const upd: Record<string, string> = {};
+            if (ch.updates?.personality) upd.personality = ch.updates.personality;
+            if (ch.updates?.currentGoal) upd.currentGoal = ch.updates.currentGoal;
+            if (ch.updates?.background) upd.background = ch.updates.background;
+            if (Object.keys(upd).length > 0) {
+              await this.characterService.upsertCharacterProfile(ch.id, upd);
+              updates.push(`角色「${ch.name}」已更新`);
+            }
+          }
+        }
+      }
+
+      // 同步剧情线
+      if (data.plotlines?.length) {
+        for (const pl of data.plotlines) {
+          if (pl.action === 'create' && pl.title) {
+            await this.plannerService.createPlotLine(bookId, { title: pl.title, description: pl.updates?.description || '', type: 'SUB' });
+            updates.push(`剧情线「${pl.title}」已创建`);
+          } else if (pl.action === 'update' && pl.id) {
+            await this.plannerService.updatePlotLine(pl.id, { description: pl.updates?.description || '' });
+            updates.push(`剧情线「${pl.title}」已更新`);
+          }
+        }
+      }
+
+      // 同步伏笔
+      if (data.foreshadowings?.length) {
+        for (const fs of data.foreshadowings) {
+          if (fs.action === 'create' && fs.title) {
+            await this.plannerService.createForeshadowing(bookId, { title: fs.title, content: fs.content || '' });
+            updates.push(`伏笔「${fs.title}」已植入`);
+          } else if (fs.action === 'resolve' && fs.id) {
+            await this.plannerService.resolveForeshadowing(fs.id, fs.content || '');
+            updates.push(`伏笔「${fs.title}」已回收`);
+          }
+        }
+      }
+
+      // 同步世界观
+      if (data.world_update) {
+        const existingWs = (context.worldSettings || [])[0] as any;
+        if (existingWs) {
+          const wu = data.world_update;
+          await this.plannerService.updateWorldSetting(existingWs.id, {
+            ...(wu.theme ? { theme: (existingWs.theme || '') + '\n' + wu.theme } : {}),
+            ...(wu.tone ? { tone: wu.tone } : {}),
+          });
+          updates.push(`世界观已补充`);
+        }
+      }
+
+      this.invalidateContextCache(bookId);
+    } catch (err: any) {
+      this.logger.warn(`[syncInternals] 同步失败: ${err.message}`);
+    }
+
+    return { updates };
+  }
+
   /**
    * 流式调用 Agent — 逐 token 返回
    * 每收到一个 chunk 回调 onChunk(text)，结束后返回完整结果
@@ -2098,6 +3794,7 @@ ${existingRelStr}
     temperature: number,
     options: { maxTokens?: number; timeoutMs?: number; systemPrompt?: string; useFastModel?: boolean; modelOverride?: string; chatHistory?: Array<{ role: string; content: string }> },
     onChunk: (chunk: string) => void,
+    onThinkingChunk?: (chunk: string) => void,
   ): Promise<string> {
     const maxTokens = options.maxTokens ?? 2000;
     const timeoutMs = options.timeoutMs ?? 120000;
@@ -2112,9 +3809,15 @@ ${existingRelStr}
 
     this.logger.log(`[streamCallAgent] ${type} | model=${endpoint.model} | endpoint=${endpoint.url} | maxTokens=${maxTokens} | timeout=${timeoutMs}ms`);
 
+    // 截断过长的聊天历史消息，防止上下文溢出
+    const truncatedHistory = (options.chatHistory || []).map(m => ({
+      role: m.role,
+      content: m.content.length > 800 ? m.content.slice(0, 800) + '...(已截断)' : m.content,
+    }));
+
     const messages: Array<{ role: string; content: string }> = [
       { role: 'system', content: options.systemPrompt ?? this.getSystemPrompt(type) },
-      ...(options.chatHistory || []),
+      ...truncatedHistory,
       { role: 'user', content: prompt },
     ];
     const response = await axios.post(
@@ -2140,6 +3843,7 @@ ${existingRelStr}
 
     return new Promise((resolve, reject) => {
       let fullText = '';
+      let streamError: string | null = null;
       const stream = response.data;
 
       stream.on('data', (buf: Buffer) => {
@@ -2152,10 +3856,22 @@ ${existingRelStr}
           if (json === '[DONE]') continue;
           try {
             const parsed = JSON.parse(json);
-            const delta = parsed.choices?.[0]?.delta?.content;
-            if (delta) {
-              fullText += delta;
-              onChunk(delta);
+            // 检测 API 返回的错误（某些提供商在流中返回错误对象而非 HTTP 错误码）
+            if (parsed.error) {
+              const errMsg = typeof parsed.error === 'string' ? parsed.error : (parsed.error.message || JSON.stringify(parsed.error));
+              this.logger.warn(`[streamCallAgent] API 流式返回错误: ${errMsg.slice(0, 200)}`);
+              streamError = errMsg;
+              continue;
+            }
+            const delta = parsed.choices?.[0]?.delta;
+            const reasoningContent = delta?.reasoning_content;
+            const content = delta?.content;
+            if (reasoningContent && onThinkingChunk) {
+              onThinkingChunk(reasoningContent);
+            }
+            if (content) {
+              fullText += content;
+              onChunk(content);
             }
           } catch {
             /* 忽略解析错误 */
@@ -2164,7 +3880,13 @@ ${existingRelStr}
       });
 
       stream.on('end', () => {
-        this.logger.log(`[streamCallAgent] ${type} 流式完成 | ${fullText.length}chars`);
+        // 如果收到了流内错误且没有收到任何有效内容，则以错误方式结束
+        if (streamError && !fullText) {
+          this.logger.error(`[streamCallAgent] ${type} 流式结束但无有效内容，流内错误: ${streamError.slice(0, 200)}`);
+          reject(new Error(`AI API 返回错误: ${streamError.slice(0, 100)}`));
+          return;
+        }
+        this.logger.log(`[streamCallAgent] ${type} 流式完成 | ${fullText.length}chars${streamError ? ' (含流内错误)' : ''}`);
         resolve(fullText);
       });
 
@@ -2483,10 +4205,24 @@ ${existingRelStr}
     return prompt;
   }
 
-  private buildPlannerPrompt(bookId: string, content: string | undefined, context: any): string {
-    const { worldSettings, plotLines, characters } = context;
+  private buildPlannerPrompt(bookId: string, content: string | undefined, context: any, userInstructions?: string): string {
+    const { worldSettings, plotLines, characters, outlines } = context;
 
     let prompt = `# 任务：章节规划\n\n`;
+
+    // 用户创作指令（如"根据第16章章纲编写第16章"）
+    if (userInstructions) {
+      prompt += `## 用户指令\n${userInstructions}\n\n`;
+    }
+
+    // 已有章纲/大纲（关键参考！用户可能要求"根据章纲编写"）
+    if (outlines?.length) {
+      prompt += `## 已有章纲/大纲\n`;
+      (outlines as any[]).forEach((o: any) => {
+        prompt += `### ${o.title}\n${(o.content || '').slice(0, 1500)}\n\n`;
+      });
+    }
+
     prompt += `## 世界观设定\n`;
     (worldSettings || []).forEach((ws: any) => {
       prompt += `- 题材: ${ws.genre || '未设定'}, 主题: ${ws.theme || '未设定'}, 风格: ${ws.tone || '未设定'}\n`;
@@ -2506,7 +4242,7 @@ ${existingRelStr}
       prompt += `\n## 当前内容\n${content.slice(-2000)}\n`;
     }
 
-    prompt += `\n请根据以上上下文，提供章节规划建议，包括：
+    prompt += `\n请根据以上上下文（特别是已有章纲），提供章节规划建议，包括：
 1. 本章情节目标
 2. 情绪节奏建议
 3. 需要推进的伏笔
@@ -2521,10 +4257,16 @@ ${existingRelStr}
     planning: string,
     context: any,
     command: string = 'continue',
+    userInstructions?: string,
   ): string {
-    const { characters, foreshadowings, chapterSummary, plotLines, ragContext } = context;
+    const { characters, foreshadowings, chapterSummary, plotLines, ragContext, outlines } = context;
 
     let prompt = `# 任务：写作生成\n## 指令: ${command}\n\n`;
+
+    // 用户创作指令
+    if (userInstructions) {
+      prompt += `## 用户指令\n${userInstructions}\n\n`;
+    }
 
     if (ragContext) {
       prompt += `## 检索上下文\n${ragContext}\n\n`;
@@ -2532,6 +4274,14 @@ ${existingRelStr}
 
     if (planning) {
       prompt += `## 规划要点\n${planning}\n\n`;
+    }
+
+    // 已有章纲/大纲 — 写作时最重要的参考
+    if (outlines?.length) {
+      prompt += `## 章纲/大纲（请严格参照此章纲进行创作）\n`;
+      (outlines as any[]).forEach((o: any) => {
+        prompt += `### ${o.title}\n${(o.content || '').slice(0, 2000)}\n\n`;
+      });
     }
 
     prompt += `## 角色状态\n`;

@@ -32,6 +32,8 @@ import {
   CreateTimelineEventDto,
   CreateForeshadowingDto,
   ResolveForeshadowingDto,
+  CreateOutlineDto,
+  UpdateOutlineDto,
   UpsertCharacterProfileDto,
   CreateRelationshipDto,
   UpdateRelationshipDto,
@@ -55,6 +57,7 @@ import {
   ToolAnalysisDto,
   InlinePolishDto,
   AssistContentDto,
+  OrchestrateDto,
 } from './dto/agent.dto';
 
 /**
@@ -193,6 +196,34 @@ export class AgentController {
         dto.modelId,
       );
       res.write(`data: ${JSON.stringify({ type: 'done', data: result })}\n\n`);
+    } catch (err: any) {
+      res.write(`data: ${JSON.stringify({ type: 'error', data: { message: err.message } })}\n\n`);
+    }
+    res.write('data: [DONE]\n\n');
+    res.end();
+  }
+
+  /** 多步编排流式端点 — 任务分解 + 逐步思考 + 确认 + 执行 */
+  @Post('orchestrate/stream')
+  async streamOrchestrate(@Body() dto: OrchestrateDto, @Res() res: Response) {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    try {
+      await this.orchestrator.streamOrchestrate(
+        dto.bookId,
+        dto.message,
+        (event) => {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        },
+        dto.chapterId,
+        dto.currentContent,
+        dto.modelId,
+        dto.approvedSteps,
+      );
     } catch (err: any) {
       res.write(`data: ${JSON.stringify({ type: 'error', data: { message: err.message } })}\n\n`);
     }
@@ -509,6 +540,36 @@ export class AgentController {
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteForeshadowing(@Param('id') id: string) {
     await this.planner.deleteForeshadowing(id);
+  }
+
+  // ==================== L3 章纲（章节大纲） ====================
+
+  @Get('outlines/:bookId')
+  async getOutlines(@Param('bookId') bookId: string) {
+    return this.planner.getOutlines(bookId);
+  }
+
+  @Post('outlines')
+  async createOutline(@Body() dto: CreateOutlineDto) {
+    return this.planner.createOutline(dto.bookId, { title: dto.title, content: dto.content });
+  }
+
+  @Put('outlines/:id')
+  async updateOutline(@Param('id') id: string, @Body() dto: UpdateOutlineDto) {
+    return this.planner.updateOutline(id, dto);
+  }
+
+  @Delete('outlines/:id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deleteOutline(@Param('id') id: string) {
+    await this.planner.deleteOutline(id);
+  }
+
+  // ==================== 内在设定同步 ====================
+
+  @Post('sync-internals')
+  async syncInternals(@Body() dto: { bookId: string; chapterId: string }) {
+    return this.orchestrator.syncInternalsAfterWrite(dto.bookId, dto.chapterId);
   }
 
   // ==================== L2 角色档案 ====================

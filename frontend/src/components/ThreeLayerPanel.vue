@@ -11,6 +11,7 @@ import WorldSettingEditor from './WorldSettingEditor.vue';
 import RelationshipGraph from './RelationshipGraph.vue';
 import PlotLineEditor from './PlotLineEditor.vue';
 import ForeshadowingEditor from './ForeshadowingEditor.vue';
+import OrchestrationPanel from './OrchestrationPanel.vue';
 
 marked.setOptions({ breaks: true, gfm: true });
 
@@ -211,10 +212,47 @@ function rejectCommandResult() {
 function applyToDocument() { if (agentStore.aiResult) emit('apply', agentStore.aiResult); }
 function insertToDocument() { if (agentStore.aiResult) emit('insert', agentStore.aiResult); }
 
+// === 章纲表单 ===
+const showOutlineForm = ref(false);
+const outlineFormTitle = ref('');
+const outlineFormContent = ref('');
+const editingOutlineId = ref<string | null>(null);
+
+function editOutline(ol: { id: string; title: string; content: string }) {
+  editingOutlineId.value = ol.id;
+  outlineFormTitle.value = ol.title;
+  outlineFormContent.value = ol.content || '';
+  showOutlineForm.value = true;
+}
+
+async function saveOutline() {
+  if (!outlineFormTitle.value.trim()) return;
+  if (editingOutlineId.value) {
+    await agentStore.updateOutline(editingOutlineId.value, props.bookId, {
+      title: outlineFormTitle.value.trim(),
+      content: outlineFormContent.value.trim(),
+    });
+  } else {
+    await agentStore.createOutline(props.bookId, outlineFormTitle.value.trim(), outlineFormContent.value.trim());
+  }
+  showOutlineForm.value = false;
+  editingOutlineId.value = null;
+  outlineFormTitle.value = '';
+  outlineFormContent.value = '';
+}
+
+async function handleDeleteOutline(id: string) {
+  await agentStore.deleteOutline(id, props.bookId);
+}
+
+// === 多步编排模式 ===
+const orchestrationMode = ref(false);
+
 // === 聊天 UI ===
 const chatInput = ref('');
 const chatContainerRef = ref<HTMLElement | null>(null);
 let activeAbortController: AbortController | null = null;
+const actionExecuting = ref(false); // 防止 action 执行期间并发发送消息
 
 function cancelGeneration() {
   if (activeAbortController) { activeAbortController.abort(); activeAbortController = null; }
@@ -224,6 +262,18 @@ function cancelGeneration() {
   if (loadingIdx >= 0) {
     agentStore.chatMessages[loadingIdx] = { ...agentStore.chatMessages[loadingIdx], content: '⏹ 已取消生成' };
   }
+}
+
+// === 多步编排确认/取消 ===
+async function handleOrchestrationConfirm() {
+  await agentStore.confirmOrchestration();
+  emit('refreshChapters');
+  await nextTick();
+  scrollToBottom();
+}
+
+function handleOrchestrationCancel() {
+  agentStore.cancelOrchestration();
 }
 
 // === 上下文指示器 ===
@@ -340,11 +390,54 @@ const streamMaskText = computed(() => {
   return 'AI 正在处理中…';
 });
 
+/** 智能检测是否需要多步编排（复杂创作请求自动走编排流程） */
+function needsOrchestration(text: string): boolean {
+  // 模式匹配：复杂创作请求
+  const patterns = [
+    /根据.{0,10}(内容|章节|情节).{0,10}(写|编写|创作|生成).{0,10}(最新|下一|新).{0,2}章/,
+    /写出?.{0,5}(最新|下一|新).{0,2}章/,
+    /(编写|创作|生成).{0,10}(最新|下一|新).{0,2}章/,
+    /(补全|填补|补充|完善).{0,10}(世界观|角色|章纲|设定|大纲|伏笔|金手指)/,
+    /先.{0,20}(扫描|分析|检查).{0,20}再.{0,20}(写|编|生成)/,
+    /(逐步|一步步|按步骤).{0,20}(写|创作|生成)/,
+    /从.{0,5}(头|零|头到尾).{0,10}(写|开始|创作)/,
+    /根据.{0,10}(当前|现有|已有).{0,10}(内容|章节).{0,10}(填补|补全|补充|完善)/,
+    /(填补|补全|补充|完善).{0,10}(内在|设定|世界|角色|大纲|伏笔|金手指|剧情)/,
+  ];
+  if (patterns.some(p => p.test(text))) return true;
+
+  // 内在不完整检测：如果要写章节但内在设定严重缺失，自动走编排
+  const isWriteRequest = /(编写|写|生成|创作).{0,10}(第.{1,5}章|章节)/.test(text) || /根据.{0,10}(内容|当前).{0,10}(编写|写)/.test(text);
+  if (isWriteRequest) {
+    const hasNoChars = (agentStore.characters?.length || 0) === 0;
+    const hasNoWorld = (agentStore.worldSettings?.length || 0) === 0;
+    const hasNoOutlines = (agentStore.outlines?.length || 0) === 0;
+    // 缺少2项以上内在设定 → 走编排先补全
+    const missingCount = [hasNoChars, hasNoWorld, hasNoOutlines].filter(Boolean).length;
+    if (missingCount >= 2) return true;
+  }
+
+  return false;
+}
+
 async function sendMessage() {
   const text = chatInput.value.trim();
-  if (!text || !props.bookId) return;
+  if (!text || !props.bookId || agentStore.chatLoading || actionExecuting.value) return;
   chatInput.value = '';
   activeAbortController = new AbortController();
+
+  // 智能路由：复杂创作请求自动进入多步编排模式
+  if (orchestrationMode.value || needsOrchestration(text)) {
+    await agentStore.startOrchestration(
+      props.bookId, text, props.chapterId, props.content,
+      activeAbortController.signal,
+    );
+    activeAbortController = null;
+    emit('refreshChapters');
+    await nextTick();
+    scrollToBottom();
+    return;
+  }
 
   const result = await agentStore.sendChat(
     props.bookId, text, props.chapterId, props.content,
@@ -352,9 +445,27 @@ async function sendMessage() {
   );
   activeAbortController = null;
 
-  if (result?.suggestedActions?.length) {
-    for (const action of result.suggestedActions) {
-      await autoExecuteAction(action);
+  // 如果 AI 未返回操作但用户意图明确（如"编写第N章"），自动推断并执行
+  let actions = result?.suggestedActions;
+  if (!actions?.length) {
+    const chapterMatch = text.match(/(编写|写|创作|生成).{0,10}第(\d+|[一二三四五六七八九十百]+)章[：:\s]*(.*)?/);
+    if (chapterMatch) {
+      const chapterNum = chapterMatch[2];
+      const titleSuffix = chapterMatch[3]?.trim();
+      const title = titleSuffix ? `第${chapterNum}章 ${titleSuffix}` : `第${chapterNum}章`;
+      actions = [{ type: 'create_chapter', label: `编写${title}`, data: { title, generateContent: true, prompt: text } }];
+      console.log('[sendMessage] AI 未返回操作，根据用户意图自动推断 create_chapter:', title);
+    }
+  }
+
+  if (actions?.length) {
+    actionExecuting.value = true;
+    try {
+      for (const action of actions) {
+        await autoExecuteAction(action);
+      }
+    } finally {
+      actionExecuting.value = false;
     }
   }
   await nextTick();
@@ -496,6 +607,7 @@ async function autoExecuteAction(action: { type: string; label: string; data: an
       }
     } else if (action.type === 'create_character') {
       const d = action.data;
+      if (!d?.name) { updateStatusMsg(statusMsgId, '创建角色失败：缺少角色名称'); clearInterval(thinkingTimer); return; }
       const charResult = await agentStore.createCharacter(props.bookId, {
         name: d.name, role: d.role, personality: d.personality,
         background: d.background, goal: d.goal, strength: d.strength, weakness: d.weakness,
@@ -505,36 +617,85 @@ async function autoExecuteAction(action: { type: string; label: string; data: an
       } else updateStatusMsg(statusMsgId, `创建角色失败`);
     } else if (action.type === 'create_plotline') {
       const d = action.data;
+      if (!d?.title) { updateStatusMsg(statusMsgId, '创建剧情线失败：缺少标题'); clearInterval(thinkingTimer); return; }
       await agentStore.createPlotLine(props.bookId, d.title, d.description, d.type || 'MAIN');
       updateStatusMsg(statusMsgId, `剧情线「${d.title}」已创建\n\n[${d.type || 'MAIN'}] ${d.description?.slice(0, 120) || ''}`);
     } else if (action.type === 'create_foreshadowing') {
       const d = action.data;
-      await agentStore.createForeshadowing(props.bookId, d.title, d.content, props.chapterId);
+      if (!d?.title) { updateStatusMsg(statusMsgId, '创建伏笔失败：缺少标题'); clearInterval(thinkingTimer); return; }
+      await agentStore.createForeshadowing(props.bookId, d.title, d.content || '', props.chapterId);
       updateStatusMsg(statusMsgId, `伏笔「${d.title}」已植入\n\n${d.content?.slice(0, 120) || ''}`);
     } else if (action.type === 'analyze_text') {
       const analysisType = action.data?.analysisType || 'comprehensive';
       const sIdx = agentStore.chatMessages.findIndex(m => m.id === statusMsgId);
       if (sIdx >= 0) agentStore.chatMessages.splice(sIdx, 1);
       await agentStore.analyzeFullText(props.bookId, analysisType);
+    } else if (action.type === 'orchestrate') {
+      // 多步编排：分析→补全设定→更新章纲→编写章节
+      const sIdx = agentStore.chatMessages.findIndex(m => m.id === statusMsgId);
+      if (sIdx >= 0) agentStore.chatMessages.splice(sIdx, 1);
+      await agentStore.startOrchestration(props.bookId, action.data?.message || action.label, props.chapterId, props.content);
+    } else if (action.type === 'save_outline') {
+      // 保存/应用章纲到大纲维度
+      const d = action.data;
+      if (d?.title && d?.content) {
+        try {
+          // 查找已有同标题章纲，如果有则更新，否则创建
+          const existingOutline = agentStore.outlines.find(o => o.title === d.title);
+          if (existingOutline) {
+            await agentStore.updateOutline(existingOutline.id, props.bookId, { content: d.content });
+            updateStatusMsg(statusMsgId, `章纲「${d.title}」已更新到大纲维度\n\n${d.content.slice(0, 300)}${d.content.length > 300 ? '...' : ''}`);
+          } else {
+            await agentStore.createOutline(props.bookId, d.title, d.content);
+            updateStatusMsg(statusMsgId, `章纲「${d.title}」已保存到大纲维度\n\n${d.content.slice(0, 300)}${d.content.length > 300 ? '...' : ''}`);
+          }
+        } catch (err: any) {
+          updateStatusMsg(statusMsgId, `保存章纲失败: ${err.message}`);
+        }
+      } else {
+        updateStatusMsg(statusMsgId, `章纲内容为空，无法保存`);
+      }
     } else if (action.type === 'create_chapter') {
       const d = action.data;
       const title = d.title || `第${(bookStore.currentBook?.chapters?.length || 0) + 1}章`;
       try {
-        updateStatusMsg(statusMsgId, `正在创建章节「${title}」...`);
-        const chapter = await bookStore.createChapter(props.bookId, { title });
+        // 查找是否已有同标题（或包含关键词）的章节，避免重复创建
+        const existingChapter = (bookStore.currentBook?.chapters || []).find(ch => {
+          if (ch.title === title) return true;
+          // 模糊匹配：标题包含"第N章"且用户请求也包含同样的"第N章"
+          const numMatch = title.match(/第(\d+|[一二三四五六七八九十百]+)章/);
+          if (numMatch) {
+            return ch.title.includes(`第${numMatch[1]}章`);
+          }
+          return false;
+        });
+        let chapter = existingChapter || null;
+        if (chapter) {
+          updateStatusMsg(statusMsgId, `已找到章节「${chapter.title}」，正在生成内容...`);
+        } else {
+          updateStatusMsg(statusMsgId, `正在创建章节「${title}」...`);
+          chapter = await bookStore.createChapter(props.bookId, { title });
+        }
         if (chapter) {
           emit('refreshChapters');
           emit('navigateToChapter', chapter.id);
 
           if (d.generateContent && d.prompt) {
-            updateStatusMsg(statusMsgId, `章节「${title}」已创建，正在生成内容...`);
+            updateStatusMsg(statusMsgId, `章节「${chapter.title}」正在生成内容...`);
             const result = await agentStore.runAgent(props.bookId, chapter.id, '', 'generate', undefined, d.prompt);
             if (result?.result) {
               const htmlContent = textToHtml(result.result);
               await bookStore.saveChapter(chapter.id, { content: htmlContent });
               emit('refreshChapters');
               emit('navigateToChapter', chapter.id);
-              updateStatusMsg(statusMsgId, `章节「${title}」已创建并生成内容 (${result.result.length} 字)`);
+              updateStatusMsg(statusMsgId, `章节「${title}」已创建并生成内容 (${result.result.length} 字)，正在同步内在设定...`);
+              // 自动同步内在设定
+              const syncUpdates = await agentStore.syncInternals(props.bookId, chapter.id);
+              if (syncUpdates.length > 0) {
+                updateStatusMsg(statusMsgId, `章节「${title}」已创建 (${result.result.length} 字)\n\n内在设定已同步:\n${syncUpdates.join('\n')}`);
+              } else {
+                updateStatusMsg(statusMsgId, `章节「${title}」已创建并生成内容 (${result.result.length} 字)`);
+              }
             } else {
               updateStatusMsg(statusMsgId, `章节「${title}」已创建，但内容生成为空，请手动编写`);
             }
@@ -754,6 +915,31 @@ function getStatusText(status: string) {
             </div>
           </div>
         </div>
+        <div class="bg-surface-secondary rounded-lg p-3">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-medium text-text-primary">章纲</h3>
+            <button @click="showOutlineForm = true" class="text-xs text-brand hover:text-brand-dark font-medium">+ 添加</button>
+          </div>
+          <!-- 新建/编辑章纲表单 -->
+          <div v-if="showOutlineForm" class="mb-3 p-2 bg-white rounded-lg border border-brand/30 space-y-2">
+            <input v-model="outlineFormTitle" placeholder="章纲标题（如：第四章 百草园考验）" class="w-full text-xs px-2 py-1.5 border border-border rounded focus:outline-none focus:border-brand" />
+            <textarea v-model="outlineFormContent" placeholder="章节大纲内容..." rows="4" class="w-full text-xs px-2 py-1.5 border border-border rounded focus:outline-none focus:border-brand resize-none"></textarea>
+            <div class="flex gap-2 justify-end">
+              <button @click="showOutlineForm = false; editingOutlineId = null; outlineFormTitle = ''; outlineFormContent = ''" class="text-xs px-2 py-1 rounded bg-gray-100 hover:bg-gray-200 text-text-muted">取消</button>
+              <button @click="saveOutline" class="text-xs px-2 py-1 rounded bg-brand text-white hover:bg-brand-dark">保存</button>
+            </div>
+          </div>
+          <div v-if="agentStore.outlines.length === 0 && !showOutlineForm" class="text-xs text-text-muted">暂无章纲，可由AI自动生成</div>
+          <div v-else class="space-y-2">
+            <div v-for="ol in agentStore.outlines" :key="ol.id" class="text-xs p-2.5 bg-white rounded-lg border border-border hover:border-brand/30 transition-colors group">
+              <div class="flex items-center justify-between">
+                <span class="text-text-primary font-medium cursor-pointer" @click="editOutline(ol)">{{ ol.title }}</span>
+                <button @click="handleDeleteOutline(ol.id)" class="text-gray-300 hover:text-red-400 opacity-0 group-hover:opacity-100 transition-opacity text-xs">×</button>
+              </div>
+              <div v-if="ol.content" class="text-text-muted mt-1 cursor-pointer" @click="editOutline(ol)">{{ ol.content.slice(0, 80) }}{{ ol.content.length > 80 ? '...' : '' }}</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -947,6 +1133,15 @@ function getStatusText(status: string) {
 
                   <!-- Markdown 渲染消息 -->
                   <div class="ai-message bg-surface-secondary/80 backdrop-blur-sm px-3.5 py-2.5 rounded-2xl rounded-bl-md text-xs text-text-primary leading-relaxed shadow-sm border border-border/30" v-html="renderMarkdown(msg.content)"></div>
+
+                  <!-- 多步编排面板 -->
+                  <OrchestrationPanel
+                    v-if="agentStore.orchestration.steps.length > 0 && msg.id === agentStore.orchestration.msgId && (agentStore.orchestration.active || agentStore.orchestration.phase === 'awaiting_approval' || agentStore.orchestration.phase === 'done' || agentStore.orchestration.phase === 'completed')"
+                    class="mt-2"
+                    @confirm="handleOrchestrationConfirm"
+                    @cancel="handleOrchestrationCancel"
+                    @refresh-chapters="emit('refreshChapters')"
+                  />
                 </div>
 
                 <span class="text-[10px] text-text-muted mt-1 ml-1">{{ formatTime(msg.timestamp) }}</span>
@@ -1206,14 +1401,14 @@ function getStatusText(status: string) {
               <textarea
                 v-model="chatInput"
                 @keydown.enter.exact.prevent="sendMessage"
-                :disabled="agentStore.chatLoading"
+                :disabled="agentStore.chatLoading || actionExecuting"
                 :placeholder="toolModePlaceholders[agentStore.activeToolMode]"
                 rows="1"
                 class="w-full px-3.5 py-2.5 text-xs bg-transparent resize-none focus:outline-none max-h-24 overflow-y-auto disabled:opacity-50"
               />
             </div>
             <button
-              v-if="!agentStore.chatLoading"
+              v-if="!agentStore.chatLoading && !actionExecuting"
               @click="sendMessage"
               :disabled="!chatInput.trim()"
               class="p-2.5 bg-gradient-to-br from-brand to-brand-dark hover:from-brand-dark hover:to-brand text-white rounded-xl disabled:opacity-20 disabled:from-gray-300 disabled:to-gray-400 transition-all shrink-0 shadow-sm hover:shadow-md active:scale-95"
@@ -1232,6 +1427,14 @@ function getStatusText(status: string) {
               :title="cmd.label"
             >{{ cmd.icon }} {{ cmd.label }}</button>
             <div class="flex-1"></div>
+            <button
+              @click="orchestrationMode = !orchestrationMode"
+              :class="orchestrationMode ? 'text-brand bg-brand-50 ring-1 ring-brand/30' : 'text-text-muted hover:text-brand hover:bg-brand-50'"
+              class="px-2 py-0.5 text-[10px] rounded-md transition-colors flex items-center gap-0.5"
+              title="多步编排模式：AI 自动拆解任务并依次执行"
+            >
+              📋 多步编排
+            </button>
             <button v-if="agentStore.chatMessages.length > 0" @click="agentStore.clearChat" class="text-[10px] text-text-muted hover:text-red-400 transition-colors flex items-center gap-0.5" title="清空对话">
               <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0"/></svg>
               清空
