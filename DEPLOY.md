@@ -30,6 +30,8 @@
    redis://default:password@xxx.upstash.io
    ```
 
+> 当前仓库内置的 Docker 方案默认已经包含本地 Redis 容器；只有云部署时才需要额外接入 Upstash。
+
 ### 3. 后端部署 - Railway
 
 1. 访问 https://railway.app 注册账号 (用 GitHub 登录)
@@ -62,7 +64,7 @@ SILICONFLOW_API_KEY=你的API密钥 (可选)
 5. 在 Environment Variables 添加：
 
 ```
-VITE_API_BASE_URL=https://你的railway后端URL
+VITE_API_URL=https://你的railway后端URL
 ```
 
 6. 点击 Deploy
@@ -75,9 +77,58 @@ VITE_API_BASE_URL=https://你的railway后端URL
 
 ---
 
-## 本地开发运行
+## 本地运行
 
-### 前端
+### Docker 本地运行
+
+项目仓库已内置完整 Docker 方案，可直接在根目录运行。
+
+1. 复制环境变量模板
+
+```bash
+cp .env.docker.example .env
+```
+
+2. 至少填写以下变量：
+
+```env
+JWT_SECRET=replace-with-a-strong-secret
+SILICONFLOW_API_KEY=your-api-key
+```
+
+3. 启动容器
+
+```bash
+docker compose up -d --build
+```
+
+Windows PowerShell 也可直接运行：
+
+```powershell
+./scripts/docker-up.ps1 -Build
+```
+
+停止容器：
+
+```powershell
+./scripts/docker-down.ps1
+```
+
+启动后：
+
+- 前端：http://localhost
+- 后端：http://localhost:3001
+- 反代 API：http://localhost/api
+
+说明：
+
+- Docker 方案默认使用 SQLite 持久化卷，不依赖外部数据库
+- Redis 已在 compose 中内置
+- 当前 Prisma schema 仍以 SQLite 为默认 provider，因此 Docker 本地部署优先走 SQLite
+
+### 本地开发运行
+
+#### 前端
 
 ```bash
 cd frontend
@@ -86,7 +137,7 @@ npm run dev
 # 访问 http://localhost:5173
 ```
 
-### 后端
+#### 后端
 
 ```bash
 cd backend

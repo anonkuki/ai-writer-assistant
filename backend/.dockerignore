@@ -1,0 +1,9 @@
+node_modules
+dist
+.env
+.env.local
+npm-debug.log
+coverage
+test
+*.log
+.env.docker

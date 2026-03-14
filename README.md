@@ -820,41 +820,62 @@ npm run build
 
 ### 方案二：Docker 容器化
 
+仓库当前已经内置完整的 Docker 部署资产：
+
+- [docker-compose.yml](docker-compose.yml)：前端 + 后端 + Redis
+- [backend/Dockerfile](backend/Dockerfile)：NestJS + Prisma 生产镜像
+- [backend/docker-entrypoint.sh](backend/docker-entrypoint.sh)：自动处理 Prisma 初始化
+- [frontend/Dockerfile](frontend/Dockerfile)：Vite 构建 + Nginx 静态托管
+- [frontend/nginx.conf](frontend/nginx.conf)：SPA 回退、/api 反代、Socket.io 反代
+- [scripts/docker-up.ps1](scripts/docker-up.ps1) / [scripts/docker-up.cmd](scripts/docker-up.cmd)：Windows 一键启动脚本
+
 #### 后端 Dockerfile
+
+仓库已内置 [backend/Dockerfile](backend/Dockerfile)。核心逻辑如下：
 
 ```dockerfile
 # backend/Dockerfile
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npx prisma generate && npm run build
 
-FROM node:18-alpine
+FROM node:20-alpine
 WORKDIR /app
-COPY --from=builder /app/dist ./dist
+ENV NODE_ENV=production
+ENV PORT=3001
+
+COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json ./
+COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
+
+RUN mkdir -p /app/data && chmod +x /app/docker-entrypoint.sh
 EXPOSE 3001
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+CMD ["/app/docker-entrypoint.sh"]
 ```
 
 #### 前端 Dockerfile
 
+仓库已内置 [frontend/Dockerfile](frontend/Dockerfile) 与 [frontend/nginx.conf](frontend/nginx.conf)。
+
 ```dockerfile
 # frontend/Dockerfile
-FROM node:18-alpine AS builder
+FROM node:20-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-ARG VITE_API_URL
-ARG VITE_SOCKET_URL
+ARG VITE_API_URL=
+ARG VITE_SOCKET_URL=
+ENV VITE_API_URL=$VITE_API_URL
+ENV VITE_SOCKET_URL=$VITE_SOCKET_URL
 RUN npm run build
 
-FROM nginx:alpine
+FROM nginx:1.27-alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
@@ -862,21 +883,34 @@ EXPOSE 80
 
 #### docker-compose.yml
 
-```yaml
-version: '3.8'
+仓库根目录已内置 [docker-compose.yml](docker-compose.yml)，可直接使用：
 
+```yaml
 services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+    depends_on:
+      - redis
     ports:
       - "3001:3001"
     environment:
-      - NODE_ENV=production
-      - PORT=3001
-      - JWT_SECRET=${JWT_SECRET}
-      - SILICONFLOW_API_KEY=${SILICONFLOW_API_KEY}
-      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
-      - DATABASE_URL=file:./data/prod.db
+      NODE_ENV: production
+      PORT: 3001
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: ${DATABASE_URL:-file:/app/data/prod.db}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      CACHE_TTL: ${CACHE_TTL:-300}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
     volumes:
       - backend-data:/app/data
     restart: unless-stopped
@@ -895,21 +929,49 @@ services:
 
 volumes:
   backend-data:
+  redis-data:
 ```
 
 启动：
 
 ```bash
-# 创建 .env 文件
-cat > .env << 'EOF'
-JWT_SECRET=<your-strong-secret>
-SILICONFLOW_API_KEY=<your-api-key>
-CORS_ORIGIN=http://localhost
-EOF
+# 先复制示例环境变量
+cp .env.docker.example .env
 
 # 启动所有服务
 docker-compose up -d
 ```
+
+Windows 下也可以直接使用仓库内脚本：
+
+```powershell
+./scripts/docker-up.ps1 -Build
+```
+
+或双击运行：
+
+```bat
+scripts\docker-up.cmd
+```
+
+停止容器：
+
+```powershell
+./scripts/docker-down.ps1
+```
+
+默认访问地址：
+
+- 前端首页：`http://localhost`
+- 后端 API：`http://localhost/api/...`
+- 后端直连（调试用）：`http://localhost:3001/...`
+- Redis：`localhost:6379`
+
+说明：
+
+- 如果 `prisma/migrations` 为空，后端容器会自动执行 `prisma db push` 初始化数据库
+- 如果后续补充了正式迁移文件，后端容器会自动改用 `prisma migrate deploy`
+- 当前 Docker 方案默认使用 SQLite + 持久化卷，适合本地演示和单机部署
 
 ---
 

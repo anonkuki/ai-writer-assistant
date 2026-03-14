@@ -23,7 +23,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import axios from 'axios';
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 // 注意：axios 全局配置 (baseURL + 拦截器) 已在 main.ts 中统一注册
 
 /**

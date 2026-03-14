@@ -50,9 +50,13 @@ export function validateEnv(env: RawEnv) {
     MINIMAX_API_URL:
       env.MINIMAX_API_URL || 'https://api.minimaxi.com/v1/chat/completions',
     CONTEXT_CACHE_TTL_MS: toInt(env.CONTEXT_CACHE_TTL_MS, 30000),
+    CACHE_TTL: toPositiveInt(env.CACHE_TTL, 300, 'CACHE_TTL'),
     JWT_SECRET: env.JWT_SECRET,
     DATABASE_URL: env.DATABASE_URL,
     REDIS_URL: env.REDIS_URL,
+    REDIS_HOST: env.REDIS_HOST,
+    REDIS_PORT: toPositiveInt(env.REDIS_PORT, 6379, 'REDIS_PORT'),
+    REDIS_PASSWORD: env.REDIS_PASSWORD || '',
   };
 
   if (!validated.JWT_SECRET) {

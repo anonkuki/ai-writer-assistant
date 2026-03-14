@@ -12,7 +12,7 @@ import './assets/main.css';
 import axios from 'axios';
 
 // ===== 全局 axios 配置（只注册一次） =====
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 axios.defaults.baseURL = API_URL;
 axios.interceptors.request.use((config) => {
   const token = localStorage.getItem('token');

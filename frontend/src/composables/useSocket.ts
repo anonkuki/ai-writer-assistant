@@ -76,7 +76,7 @@ export function useSocket() {
     const apiBaseUrl = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
     const socketUrl =
       import.meta.env.VITE_SOCKET_URL ||
-      (apiBaseUrl ? `${apiBaseUrl}/documents` : 'http://localhost:3001/documents');
+      (apiBaseUrl ? `${apiBaseUrl.replace(/\/api$/, '')}/documents` : `${window.location.origin}/documents`);
 
     // 从 auth store 获取 JWT token，传递给 WebSocket 握手
     const authToken = authStore.token;

@@ -1,0 +1,56 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: ai-plus-redis
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ./backend
+    container_name: ai-plus-backend
+    depends_on:
+      - redis
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      JWT_SECRET: ${JWT_SECRET}
+      DATABASE_URL: ${DATABASE_URL:-file:/app/data/prod.db}
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      CACHE_TTL: ${CACHE_TTL:-300}
+      SILICONFLOW_API_KEY: ${SILICONFLOW_API_KEY:-}
+      SILICONFLOW_API_URL: ${SILICONFLOW_API_URL:-https://api.siliconflow.cn/v1/chat/completions}
+      SILICONFLOW_MODEL: ${SILICONFLOW_MODEL:-deepseek-ai/DeepSeek-V3.2}
+      SILICONFLOW_FAST_MODEL: ${SILICONFLOW_FAST_MODEL:-}
+      SILICONFLOW_TIMEOUT_MS: ${SILICONFLOW_TIMEOUT_MS:-30000}
+      THROTTLE_TTL: ${THROTTLE_TTL:-60000}
+      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-60}
+      AI_THROTTLE_LIMIT: ${AI_THROTTLE_LIMIT:-15}
+      CONTEXT_CACHE_TTL_MS: ${CONTEXT_CACHE_TTL_MS:-30000}
+    volumes:
+      - backend-data:/app/data
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-}
+        VITE_SOCKET_URL: ${VITE_SOCKET_URL:-}
+    container_name: ai-plus-frontend
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+volumes:
+  backend-data:
+  redis-data:
